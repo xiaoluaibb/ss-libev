@@ -57,18 +57,21 @@ install_ss_libev() {
 
 # 生成 SS 链接函数 (将参数编码为 base64)
 generate_ss_link() {
-    local server_addr=$1
+    local server_addr_display=$1 # 用于显示的地址，可能是 "0.0.0.0" 或 "::1, 0.0.0.0"
     local server_port=$2
     local method=$3
     local password=$4
 
-    # 处理 server_addr 可能是数组的情况，转换为第一个或统一的字符串
-    # 这里的 server_addr 已经是纯字符串（来自jq的join或直接值）
-    local server_addr_encoded="$server_addr"
-    if [[ "$server_addr_encoded" == *" "* || "$server_addr_encoded" == *","* ]]; then
-        # 如果是多IP列表，通常SS链接只使用一个IP，或者您可以选择一个默认
+    # 对于SS链接，通常只使用一个IP或通用地址。如果显示是多个，统一用 0.0.0.0
+    local server_addr_for_link="0.0.0.0" 
+    if [[ "$server_addr_display" == "0.0.0.0" ]]; then
+        server_addr_for_link="0.0.0.0"
+    elif [[ "$server_addr_display" == *","* ]]; then
+        # 如果是多IP列表，取第一个IP作为链接地址，或者统一用 0.0.0.0
         # 这里为了简化，如果检测到是列表，统一用 "0.0.0.0" 表示
-        server_addr_encoded="0.0.0.0"
+        server_addr_for_link="0.0.0.0" 
+    else
+        server_addr_for_link="$server_addr_display"
     fi
 
     # 对密码和方法进行Base64编码
@@ -76,7 +79,7 @@ generate_ss_link() {
     local credentials_base64=$(echo -n "$credentials_raw" | base64 -w 0) # -w 0 防止换行
 
     # 构建 ss:// 链接
-    echo "ss://${credentials_base64}@${server_addr_encoded}:${server_port}#Shadowsocks_Node"
+    echo "ss://${credentials_base64}@${server_addr_for_link}:${server_port}#Shadowsocks_Node"
 }
 
 # 配置 Shadowsocks 节点
@@ -86,48 +89,57 @@ configure_ss_node() {
 
     echo -e "\n--- ${BLUE}配置 Shadowsocks 节点: ${instance_name}${NC} ---"
 
-    # 设置默认参数
-    local SS_SERVER_ADDR_DEFAULT="0.0.0.0"
-    local SS_SERVER_PORT_DEFAULT="12306" # 新增节点的默认端口
+    # 硬编码默认参数
+    local DEFAULT_SS_SERVER_ADDR_IPV4="0.0.0.0"
+    local DEFAULT_SS_SERVER_ADDR_IPV4_IPV6='["::1", "0.0.0.0"]' # JSON 数组字符串
+    local DEFAULT_SS_SERVER_PORT="12306"
+    local DEFAULT_SS_PASSWORD="your_strong_password"
+    local DEFAULT_SS_METHOD="aes-256-gcm"
+    local DEFAULT_SS_TIMEOUT="300"
+
+    # 如果是新增节点，默认端口从实例名中提取
     if [[ "$instance_name" == *"@"* ]]; then
-        # 如果是新增节点，尝试从实例名中提取端口作为默认值
-        SS_SERVER_PORT_DEFAULT=$(echo "$instance_name" | cut -d'@' -f2 | sed 's/[^0-9]//g' || echo "12306")
+        DEFAULT_SS_SERVER_PORT=$(echo "$instance_name" | cut -d'@' -f2 | sed 's/[^0-9]//g' || echo "12306")
     fi
-    local SS_PASSWORD_DEFAULT="your_strong_password" # 首次安装推荐密码
-    local SS_METHOD_DEFAULT="aes-256-gcm"
-    local SS_TIMEOUT_DEFAULT="300"
 
     echo -e "${YELLOW}请根据提示输入 Shadowsocks 节点的配置参数：${NC}"
     echo -e "${YELLOW}(可以直接回车接受推荐的默认值)${NC}"
 
-    # 询问监听地址
-    echo -n "请输入 Shadowsocks 监听地址 (默认: "
-    echo -e "${BLUE}${SS_SERVER_ADDR_DEFAULT}${NC}): "
-    read SS_SERVER_ADDR_INPUT
-    if [ -z "$SS_SERVER_ADDR_INPUT" ]; then
-        SS_SERVER_ADDR="$SS_SERVER_ADDR_DEFAULT"
-        echo -e "${GREEN}使用默认监听地址: ${SS_SERVER_ADDR}${NC}"
-    else
-        SS_SERVER_ADDR="$SS_SERVER_ADDR_INPUT"
-    fi
+    local SS_SERVER_ADDR_CONFIG="" # 实际写入配置文件的地址
+    local SS_SERVER_ADDR_DISPLAY="" # 用于显示在提示中的地址
+
+    # 询问监听地址类型
+    echo -e "\n${YELLOW}请选择 Shadowsocks 监听地址类型：${NC}"
+    echo -e "  ${BLUE}1.${NC} 仅 IPv4 (默认: ${DEFAULT_SS_SERVER_ADDR_IPV4})${NC}"
+    echo -e "  ${BLUE}2.${NC} IPv4 和 IPv6 (默认: ${DEFAULT_SS_SERVER_ADDR_IPV4_IPV6})${NC}"
+    read -p "请输入选择 (1或2, 默认1): " ADDR_TYPE_CHOICE
+    
+    case "$ADDR_TYPE_CHOICE" in
+        2)
+            SS_SERVER_ADDR_CONFIG="$DEFAULT_SS_SERVER_ADDR_IPV4_IPV6"
+            SS_SERVER_ADDR_DISPLAY="::1, 0.0.0.0" # 用于显示
+            echo -e "${GREEN}选择监听 IPv4 和 IPv6 地址。${NC}"
+            ;;
+        *) # 默认或无效输入都视为选择 1
+            SS_SERVER_ADDR_CONFIG="\"$DEFAULT_SS_SERVER_ADDR_IPV4\"" # 单个IP需要加引号
+            SS_SERVER_ADDR_DISPLAY="$DEFAULT_SS_SERVER_ADDR_IPV4" # 用于显示
+            echo -e "${GREEN}选择仅监听 IPv4 地址。${NC}"
+            ;;
+    esac
 
     # 询问代理端口
-    echo -n "请输入 Shadowsocks 代理端口 (默认: "
-    echo -e "${BLUE}${SS_SERVER_PORT_DEFAULT}${NC}): "
-    read SS_SERVER_PORT_INPUT
+    read -p "请输入 Shadowsocks 代理端口 (默认: ${DEFAULT_SS_SERVER_PORT}): " SS_SERVER_PORT_INPUT
     if [ -z "$SS_SERVER_PORT_INPUT" ]; then
-        SS_SERVER_PORT="$SS_SERVER_PORT_DEFAULT"
+        SS_SERVER_PORT="$DEFAULT_SS_SERVER_PORT"
         echo -e "${GREEN}使用默认代理端口: ${SS_SERVER_PORT}${NC}"
     else
         SS_SERVER_PORT="$SS_SERVER_PORT_INPUT"
     fi
     while ! [[ "$SS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$SS_SERVER_PORT" -lt 1 ] || [ "$SS_SERVER_PORT" -gt 65535 ]; do
         echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
-        echo -n "请输入 Shadowsocks 代理端口 (默认: "
-        echo -e "${BLUE}${SS_SERVER_PORT_DEFAULT}${NC}): "
-        read SS_SERVER_PORT_INPUT
+        read -p "请输入 Shadowsocks 代理端口 (默认: ${DEFAULT_SS_SERVER_PORT}): " SS_SERVER_PORT_INPUT
         if [ -z "$SS_SERVER_PORT_INPUT" ]; then
-            SS_SERVER_PORT="$SS_SERVER_PORT_DEFAULT"
+            SS_SERVER_PORT="$DEFAULT_SS_SERVER_PORT"
             echo -e "${GREEN}使用默认代理端口: ${SS_SERVER_PORT}${NC}"
         else
             SS_SERVER_PORT="$SS_SERVER_PORT_INPUT"
@@ -135,11 +147,9 @@ configure_ss_node() {
     done
 
     # 询问密码 (显示输入)
-    echo -n "请输入 Shadowsocks 连接密码 (默认: "
-    echo -e "${BLUE}${SS_PASSWORD_DEFAULT}${NC}): "
-    read SS_PASSWORD_INPUT
+    read -p "请输入 Shadowsocks 连接密码 (默认: ${DEFAULT_SS_PASSWORD}): " SS_PASSWORD_INPUT
     if [ -z "$SS_PASSWORD_INPUT" ]; then
-        SS_PASSWORD="$SS_PASSWORD_DEFAULT"
+        SS_PASSWORD="$DEFAULT_SS_PASSWORD"
         echo -e "${GREEN}使用默认密码: ${SS_PASSWORD}${NC}"
     else
         SS_PASSWORD="$SS_PASSWORD_INPUT"
@@ -152,33 +162,27 @@ configure_ss_node() {
     echo "  aes-128-gcm"
     echo -e "  ${GREEN}chacha20-ietf-poly1305 (推荐)${NC}"
     echo "  xchacha20-ietf-poly1305"
-    echo -n "请输入 Shadowsocks 加密方式 (默认: "
-    echo -e "${BLUE}${SS_METHOD_DEFAULT}${NC}): "
-    read SS_METHOD_INPUT
+    read -p "请输入 Shadowsocks 加密方式 (默认: ${DEFAULT_SS_METHOD}): " SS_METHOD_INPUT
     if [ -z "$SS_METHOD_INPUT" ]; then
-        SS_METHOD="$SS_METHOD_DEFAULT"
+        SS_METHOD="$DEFAULT_SS_METHOD"
         echo -e "${GREEN}使用默认加密方式: ${SS_METHOD}${NC}"
     else
         SS_METHOD="$SS_METHOD_INPUT"
     fi
 
     # 询问超时时间
-    echo -n "请输入 Shadowsocks 超时时间 (秒, 默认: "
-    echo -e "${BLUE}${SS_TIMEOUT_DEFAULT}${NC}): "
-    read SS_TIMEOUT_INPUT
+    read -p "请输入 Shadowsocks 超时时间 (秒, 默认: ${DEFAULT_SS_TIMEOUT}): " SS_TIMEOUT_INPUT
     if [ -z "$SS_TIMEOUT_INPUT" ]; then
-        SS_TIMEOUT="$SS_TIMEOUT_DEFAULT"
+        SS_TIMEOUT="$DEFAULT_SS_TIMEOUT"
         echo -e "${GREEN}使用默认超时时间: ${SS_TIMEOUT}${NC}"
     else
         SS_TIMEOUT="$SS_TIMEOUT_INPUT"
     fi
     while ! [[ "$SS_TIMEOUT" =~ ^[0-9]+$ ]] || [ "$SS_TIMEOUT" -lt 1 ]; do
         echo -e "${RED}超时时间无效，请输入一个大于0的整数。${NC}"
-        echo -n "请输入 Shadowsocks 超时时间 (秒, 默认: "
-        echo -e "${BLUE}${SS_TIMEOUT_DEFAULT}${NC}): "
-        read SS_TIMEOUT_INPUT
+        read -p "请输入 Shadowsocks 超时时间 (秒, 默认: ${DEFAULT_SS_TIMEOUT}): " SS_TIMEOUT_INPUT
         if [ -z "$SS_TIMEOUT_INPUT" ]; then
-            SS_TIMEOUT="$SS_TIMEOUT_DEFAULT"
+            SS_TIMEOUT="$DEFAULT_SS_TIMEOUT"
             echo -e "${GREEN}使用默认超时时间: ${SS_TIMEOUT}${NC}"
         else
             SS_TIMEOUT="$SS_TIMEOUT_INPUT"
@@ -187,10 +191,10 @@ configure_ss_node() {
 
     echo -e "\n${YELLOW}正在生成 Shadowsocks-libev 配置文件: ${config_file_path}...${NC}"
 
-    # 创建配置文件内容
+    # 创建配置文件内容 - server 字段直接使用 SS_SERVER_ADDR_CONFIG
     cat <<EOF > "$config_file_path"
 {
-    "server":"$SS_SERVER_ADDR",
+    "server":$SS_SERVER_ADDR_CONFIG,
     "server_port":$SS_SERVER_PORT,
     "password":"$SS_PASSWORD",
     "method":"$SS_METHOD",
@@ -214,16 +218,16 @@ EOF
     if [ $? -eq 0 ]; then
       echo -e "${GREEN}Shadowsocks-libev 服务 (${instance_name}) 已成功重启并设置开机启动！${NC}"
       echo -e "${BLUE}配置详情：${NC}"
-      echo -e "  ${BLUE}监听地址: ${GREEN}$SS_SERVER_ADDR${NC}"
+      echo -e "  ${BLUE}监听地址: ${GREEN}$SS_SERVER_ADDR_DISPLAY${NC}" # 显示时使用易读的格式
       echo -e "  ${BLUE}代理端口: ${GREEN}$SS_SERVER_PORT${NC}"
       echo -e "  ${BLUE}加密方式: ${GREEN}$SS_METHOD${NC}"
       echo -e "  ${BLUE}超时时间: ${GREEN}$SS_TIMEOUT${NC} 秒"
       
       # 生成并显示 SS 链接
       echo -e "\n${GREEN}请复制以下 SS 链接到您的代理软件：${NC}"
-      NODE_LINK=$(generate_ss_link "$SS_SERVER_ADDR" "$SS_SERVER_PORT" "$SS_METHOD" "$SS_PASSWORD")
+      NODE_LINK=$(generate_ss_link "$SS_SERVER_ADDR_DISPLAY" "$SS_SERVER_PORT" "$SS_METHOD" "$SS_PASSWORD")
       echo -e "${YELLOW}${NODE_LINK}${NC}"
-      echo -e "${BLUE}(提示：如果监听地址是0.0.0.0，请替换为您的服务器公网IP)${NC}"
+      echo -e "${BLUE}(提示：如果监听地址是0.0.0.0或包含多个地址，请替换为您的服务器公网IP)${NC}"
 
     else
       echo -e "${RED}Shadowsocks-libev 服务 (${instance_name}) 重启失败，请检查日志 (journalctl -u ${instance_name}.service) 获取更多信息。${NC}"
@@ -374,22 +378,30 @@ view_current_config() {
     for cfg in $config_files; do
         echo -e "\n${YELLOW}--- 配置文件: ${BLUE}$cfg${NC} ---"
         if [ -f "$cfg" ]; then
-            local server_addr=$(jq -r '.server | if type == "array" then join(", ") else . end' "$cfg" 2>/dev/null)
+            local server_addr_raw=$(jq '.server' "$cfg" 2>/dev/null) # 获取原始JSON格式的server字段
+            local server_addr_display=""
+            # 判断是字符串还是数组
+            if echo "$server_addr_raw" | grep -q '\[.*\]'; then # 如果是数组
+                server_addr_display=$(echo "$server_addr_raw" | jq -r 'join(", ")' 2>/dev/null)
+            else # 如果是字符串
+                server_addr_display=$(echo "$server_addr_raw" | jq -r '.' 2>/dev/null)
+            fi
+
             local server_port=$(jq -r '.server_port' "$cfg" 2>/dev/null)
             local password=$(jq -r '.password' "$cfg" 2>/dev/null)
             local method=$(jq -r '.method' "$cfg" 2>/dev/null)
             local timeout=$(jq -r '.timeout' "$cfg" 2>/dev/null)
 
-            echo -e "  ${BLUE}监听地址: ${GREEN}$server_addr${NC}"
+            echo -e "  ${BLUE}监听地址: ${GREEN}$server_addr_display${NC}"
             echo -e "  ${BLUE}代理端口: ${GREEN}$server_port${NC}"
             echo -e "  ${BLUE}加密方式: ${GREEN}$method${NC}"
             echo -e "  ${BLUE}超时时间: ${GREEN}$timeout${NC} 秒"
             echo -e "  ${BLUE}连接密码: ${GREEN}(已设置，此处不显示)${NC}"
 
             echo -e "\n${GREEN}对应的 SS 链接 (可复制)：${NC}"
-            NODE_LINK=$(generate_ss_link "$server_addr" "$server_port" "$method" "$password")
+            NODE_LINK=$(generate_ss_link "$server_addr_display" "$server_port" "$method" "$password")
             echo -e "${YELLOW}${NODE_LINK}${NC}"
-            echo -e "${BLUE}(提示：如果监听地址是0.0.0.0，请替换为您的服务器公网IP)${NC}"
+            echo -e "${BLUE}(提示：如果监听地址是0.0.0.0或包含多个地址，请替换为您的服务器公网IP)${NC}"
 
         else
             echo -e "${RED}文件不存在或无法读取。${NC}"
@@ -406,12 +418,10 @@ add_new_ss_node() {
     install_jq # 确保 jq 已安装
     if [ $? -ne 0 ]; then return; fi
 
-    echo -n "请输入新节点的端口号 (例如 8389): "
-    read NEW_PORT
+    read -p "请输入新节点的端口号 (例如 8389): " NEW_PORT
     while ! [[ "$NEW_PORT" =~ ^[0-9]+$ ]] || [ "$NEW_PORT" -lt 1 ] || [ "$NEW_PORT" -gt 65535 ]; do
         echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
-        echo -n "请重新输入新节点的端口号: "
-        read NEW_PORT
+        read -p "请重新输入新节点的端口号: " NEW_PORT
     done
 
     # 检查端口是否已被现有节点使用
@@ -456,6 +466,19 @@ setup_ss_shortcut() {
         CURRENT_SCRIPT_PATH="$SCRIPT_TARGET_PATH"
     else
         echo -e "${GREEN}脚本已位于 '${SCRIPT_TARGET_PATH}'，无需移动。${NC}"
+    LATEST_SCRIPT_CONTENT=$(cat "$0")
+    if ! diff -q <(cat "$SCRIPT_TARGET_PATH") <(echo "$LATEST_SCRIPT_CONTENT") >/dev/null 2>&1; then
+        echo -e "${YELLOW}检测到脚本已更新，正在更新脚本文件...${NC}"
+        cat "$0" > "$SCRIPT_TARGET_PATH"
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}脚本更新失败！请手动更新 '${SCRIPT_TARGET_PATH}'。${NC}"
+            return 1
+        fi
+        echo -e "${GREEN}脚本文件已更新。${NC}"
+    else
+        echo -e "${GREEN}脚本已是最新版本。${NC}"
+    fi
+
     fi
 
     # 确保脚本有执行权限
