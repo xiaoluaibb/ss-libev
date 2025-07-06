@@ -16,19 +16,19 @@ fi
 # 脚本的最终目标路径和快捷方式名称
 SCRIPT_TARGET_PATH="/usr/local/bin/ss.sh"
 SS_COMMAND_LINK="/usr/local/bin/ss"
-CONFIG_FILE="/etc/shadowsocks-libev/config.json"
+SS_CONFIG_DIR="/etc/shadowsocks-libev" # Shadowsocks 配置文件目录
 
 # --- 函数定义 ---
 
-# 检查并安装 jq (用于读取JSON配置)
+# 检查并安装 jq (用于处理JSON)
 install_jq() {
-    echo -e "${YELLOW}正在检查 'jq' 命令是否安装 (用于读取现有配置)...${NC}"
+    echo -e "${YELLOW}正在检查 'jq' 命令是否安装 (用于处理JSON配置)...${NC}"
     if ! command -v jq &> /dev/null; then
         echo -e "${YELLOW}'jq' 命令未找到，正在安装 'jq'....${NC}"
         apt update > /dev/null 2>&1
         apt install -y jq > /dev/null 2>&1
         if [ $? -ne 0 ]; then
-            echo -e "${RED}'jq' 安装失败。某些功能可能无法显示当前配置。请手动安装：sudo apt install jq${NC}"
+            echo -e "${RED}'jq' 安装失败。部分功能可能受限。请手动安装：sudo apt install jq${NC}"
             return 1
         fi
         echo -e "${GREEN}'jq' 安装完成。${NC}"
@@ -38,36 +38,8 @@ install_jq() {
     return 0
 }
 
-# 获取当前配置参数
-get_current_config() {
-    # 这些是硬编码的默认值，当配置文件不存在或jq无法读取时使用
-    SS_SERVER_ADDR_DEFAULT_DISPLAY="0.0.0.0" # 用于显示在提示中
-    SS_SERVER_ADDR_DEFAULT_RAW="\"0.0.0.0\""  # 用于实际写入配置文件
-
-    SS_SERVER_PORT_DEFAULT="8388"
-    SS_PASSWORD_DEFAULT=""
-    SS_METHOD_DEFAULT="chacha20-ietf-poly1305"
-    SS_TIMEOUT_DEFAULT="300"
-
-    # 尝试从现有配置文件中读取值
-    if [ -f "$CONFIG_FILE" ] && command -v jq &> /dev/null; then
-        # 获取用于显示的地址：如果是数组则用逗号连接，否则直接取值
-        SS_SERVER_ADDR_DEFAULT_DISPLAY=$(jq -r '.server | if type == "array" then join(", ") else . end' "$CONFIG_FILE")
-        # 获取用于写入配置文件的原始JSON格式地址：带引号的字符串或原始数组
-        SS_SERVER_ADDR_DEFAULT_RAW=$(jq '.server' "$CONFIG_FILE") # 不加 -r 以保留JSON格式
-
-        SS_SERVER_PORT_DEFAULT=$(jq -r '.server_port // 8388' "$CONFIG_FILE")
-        SS_PASSWORD_DEFAULT=$(jq -r '.password // ""' "$CONFIG_FILE")
-        SS_METHOD_DEFAULT=$(jq -r '.method // "chacha20-ietf-poly1305"' "$CONFIG_FILE")
-        SS_TIMEOUT_DEFAULT=$(jq -r '.timeout // 300' "$CONFIG_FILE")
-    fi
-}
-
-# 安装或修改 Shadowsocks-libev
-install_or_modify_ss() {
-    echo -e "\n--- ${BLUE}安装/修改 Shadowsocks-libev 配置${NC} ---"
-
-    # 检查并安装 shadowsocks-libev
+# 检查并安装 shadowsocks-libev
+install_ss_libev() {
     echo -e "${YELLOW}正在检查 shadowsocks-libev 是否已安装...${NC}"
     if ! dpkg -s shadowsocks-libev >/dev/null 2>&1; then
         echo -e "${YELLOW}shadowsocks-libev 未安装，正在安装...${NC}"
@@ -80,26 +52,72 @@ install_or_modify_ss() {
     else
         echo -e "${GREEN}shadowsocks-libev 已安装。${NC}"
     fi
+    return 0
+}
 
-    # 获取当前配置作为默认值
-    get_current_config
+# 生成 SS 链接函数 (将参数编码为 base64)
+generate_ss_link() {
+    local server_addr=$1
+    local server_port=$2
+    local method=$3
+    local password=$4
 
-    echo -e "\n${YELLOW}请根据提示输入 Shadowsocks-libev 的配置参数：${NC}"
-    echo -e "${YELLOW}(如果您想保持当前值，可以直接回车使用默认或现有值)${NC}"
+    # 清理可能存在的颜色码
+    server_addr=$(echo "$server_addr" | sed 's/\x1b\[[0-9;]*m//g')
+    server_port=$(echo "$server_port" | sed 's/\x1b\[[0-9;]*m//g')
+    method=$(echo "$method" | sed 's/\x1b\[[0-9;]*m//g')
+    password=$(echo "$password" | sed 's/\x1b\[[0-9;]*m//g')
+
+    # 处理 server_addr 可能是数组的情况，转换为第一个或统一的字符串
+    if [[ "$server_addr" == *","* || "$server_addr" == *" "* ]]; then
+        # 如果是逗号分隔或有空格（多IP），取第一个或统一表示为 0.0.0.0
+        server_addr_encoded="0.0.0.0" # 或者您希望的某个默认表示
+    else
+        server_addr_encoded="$server_addr"
+    fi
+
+    # 对密码和方法进行Base64编码
+    # 注意：shadowsocks链接格式中，密码和方法是 base64(method:password)
+    # 并且URI fragment（#之后的部分）是可选的用户备注
+    local credentials_raw="${method}:${password}"
+    local credentials_base64=$(echo -n "$credentials_raw" | base64 -w 0) # -w 0 防止换行
+
+    # 构建 ss:// 链接
+    echo "ss://${credentials_base64}@${server_addr_encoded}:${server_port}#Shadowsocks_Node"
+}
+
+# 配置 Shadowsocks 节点
+configure_ss_node() {
+    local config_file_path=$1
+    local instance_name=$2 # 例如 ss-libev 或 ss-libev@port_number
+
+    echo -e "\n--- ${BLUE}配置 Shadowsocks 节点: ${instance_name}${NC} ---"
+
+    # 设置默认参数
+    local SS_SERVER_ADDR_DEFAULT="0.0.0.0"
+    local SS_SERVER_PORT_DEFAULT="12306" # 新增节点的默认端口
+    if [[ "$instance_name" == *"@"* ]]; then
+        # 如果是新增节点，尝试从实例名中提取端口作为默认值
+        SS_SERVER_PORT_DEFAULT=$(echo "$instance_name" | cut -d'@' -f2 | sed 's/[^0-9]//g' || echo "12306")
+    fi
+    local SS_PASSWORD_DEFAULT="your_strong_password" # 首次安装推荐密码
+    local SS_METHOD_DEFAULT="aes-256-gcm"
+    local SS_TIMEOUT_DEFAULT="300"
+
+    echo -e "${YELLOW}请根据提示输入 Shadowsocks 节点的配置参数：${NC}"
+    echo -e "${YELLOW}(可以直接回车接受推荐的默认值)${NC}"
 
     # 询问监听地址
-    read -p "请输入 Shadowsocks 监听地址 (当前: ${BLUE}$SS_SERVER_ADDR_DEFAULT_DISPLAY${NC}): " SS_SERVER_ADDR_INPUT
+    read -p "请输入 Shadowsocks 监听地址 (默认: ${BLUE}$SS_SERVER_ADDR_DEFAULT${NC}): " SS_SERVER_ADDR_INPUT
     if [ -z "$SS_SERVER_ADDR_INPUT" ]; then
-        # 如果用户回车，使用原始的 JSON 格式 (SS_SERVER_ADDR_DEFAULT_RAW 已经包含引号或数组结构)
-        SS_SERVER_ADDR="$SS_SERVER_ADDR_DEFAULT_RAW"
-        echo -e "${GREEN}使用默认监听地址: ${SS_SERVER_ADDR_DEFAULT_DISPLAY}${NC}"
+        SS_SERVER_ADDR="$SS_SERVER_ADDR_DEFAULT"
+        echo -e "${GREEN}使用默认监听地址: ${SS_SERVER_ADDR}${NC}"
     else
-        # 如果用户输入了新值，将其作为字符串处理，并加上引号
-        SS_SERVER_ADDR="\"$SS_SERVER_ADDR_INPUT\""
+        SS_SERVER_ADDR="$SS_SERVER_ADDR_INPUT"
     fi
 
     # 询问代理端口
-    read -p "请输入 Shadowsocks 代理端口 (当前: ${BLUE}$SS_SERVER_PORT_DEFAULT${NC}): " SS_SERVER_PORT_INPUT
+    read -p "请输入 Shadowsocks 代理端口 (默认: ${BLUE}$SS_SERVER_PORT_DEFAULT${NC}): " SS_SERVER_PORT_INPUT
     if [ -z "$SS_SERVER_PORT_INPUT" ]; then
         SS_SERVER_PORT="$SS_SERVER_PORT_DEFAULT"
         echo -e "${GREEN}使用默认代理端口: ${SS_SERVER_PORT}${NC}"
@@ -108,7 +126,7 @@ install_or_modify_ss() {
     fi
     while ! [[ "$SS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$SS_SERVER_PORT" -lt 1 ] || [ "$SS_SERVER_PORT" -gt 65535 ]; do
         echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
-        read -p "请输入 Shadowsocks 代理端口 (当前: ${BLUE}$SS_SERVER_PORT_DEFAULT${NC}): " SS_SERVER_PORT_INPUT
+        read -p "请输入 Shadowsocks 代理端口 (默认: ${BLUE}$SS_SERVER_PORT_DEFAULT${NC}): " SS_SERVER_PORT_INPUT
         if [ -z "$SS_SERVER_PORT_INPUT" ]; then
             SS_SERVER_PORT="$SS_SERVER_PORT_DEFAULT"
             echo -e "${GREEN}使用默认代理端口: ${SS_SERVER_PORT}${NC}"
@@ -118,17 +136,10 @@ install_or_modify_ss() {
     done
 
     # 询问密码 (显示输入)
-    read -p "请输入 Shadowsocks 连接密码 (留空将使用现有密码，当前密码${YELLOW}不显示${NC}): " SS_PASSWORD_INPUT
+    read -p "请输入 Shadowsocks 连接密码 (默认: ${BLUE}$SS_PASSWORD_DEFAULT${NC}): " SS_PASSWORD_INPUT
     if [ -z "$SS_PASSWORD_INPUT" ]; then
         SS_PASSWORD="$SS_PASSWORD_DEFAULT"
-        if [ -z "$SS_PASSWORD" ]; then
-            echo -e "${RED}警告：未输入新密码，且现有配置文件中未找到密码。请务必设置一个密码。${NC}"
-            while [ -z "$SS_PASSWORD" ]; do
-                read -p "请重新输入 Shadowsocks 连接密码 (不能为空): " SS_PASSWORD
-            done
-        else
-            echo -e "${GREEN}未输入新密码，将使用现有密码。${NC}"
-        fi
+        echo -e "${GREEN}使用默认密码: ${SS_PASSWORD}${NC}"
     else
         SS_PASSWORD="$SS_PASSWORD_INPUT"
     fi
@@ -140,7 +151,7 @@ install_or_modify_ss() {
     echo "  aes-128-gcm"
     echo -e "  ${GREEN}chacha20-ietf-poly1305 (推荐)${NC}"
     echo "  xchacha20-ietf-poly1305"
-    read -p "请输入 Shadowsocks 加密方式 (当前: ${BLUE}$SS_METHOD_DEFAULT${NC}): " SS_METHOD_INPUT
+    read -p "请输入 Shadowsocks 加密方式 (默认: ${BLUE}$SS_METHOD_DEFAULT${NC}): " SS_METHOD_INPUT
     if [ -z "$SS_METHOD_INPUT" ]; then
         SS_METHOD="$SS_METHOD_DEFAULT"
         echo -e "${GREEN}使用默认加密方式: ${SS_METHOD}${NC}"
@@ -149,7 +160,7 @@ install_or_modify_ss() {
     fi
 
     # 询问超时时间
-    read -p "请输入 Shadowsocks 超时时间 (秒, 当前: ${BLUE}$SS_TIMEOUT_DEFAULT${NC}): " SS_TIMEOUT_INPUT
+    read -p "请输入 Shadowsocks 超时时间 (秒, 默认: ${BLUE}$SS_TIMEOUT_DEFAULT${NC}): " SS_TIMEOUT_INPUT
     if [ -z "$SS_TIMEOUT_INPUT" ]; then
         SS_TIMEOUT="$SS_TIMEOUT_DEFAULT"
         echo -e "${GREEN}使用默认超时时间: ${SS_TIMEOUT}${NC}"
@@ -158,7 +169,7 @@ install_or_modify_ss() {
     fi
     while ! [[ "$SS_TIMEOUT" =~ ^[0-9]+$ ]] || [ "$SS_TIMEOUT" -lt 1 ]; do
         echo -e "${RED}超时时间无效，请输入一个大于0的整数。${NC}"
-        read -p "请输入 Shadowsocks 超时时间 (秒, 当前: ${BLUE}$SS_TIMEOUT_DEFAULT${NC}): " SS_TIMEOUT_INPUT
+        read -p "请输入 Shadowsocks 超时时间 (秒, 默认: ${BLUE}$SS_TIMEOUT_DEFAULT${NC}): " SS_TIMEOUT_INPUT
         if [ -z "$SS_TIMEOUT_INPUT" ]; then
             SS_TIMEOUT="$SS_TIMEOUT_DEFAULT"
             echo -e "${GREEN}使用默认超时时间: ${SS_TIMEOUT}${NC}"
@@ -167,12 +178,12 @@ install_or_modify_ss() {
         fi
     done
 
-    echo -e "\n${YELLOW}正在生成 Shadowsocks-libev 配置文件...${NC}"
+    echo -e "\n${YELLOW}正在生成 Shadowsocks-libev 配置文件: ${config_file_path}...${NC}"
 
-    # 创建配置文件内容 - server 字段直接使用 SS_SERVER_ADDR，它现在已经是引号或数组格式
-    cat <<EOF > "$CONFIG_FILE"
+    # 创建配置文件内容
+    cat <<EOF > "$config_file_path"
 {
-    "server":$SS_SERVER_ADDR,
+    "server":"$SS_SERVER_ADDR",
     "server_port":$SS_SERVER_PORT,
     "password":"$SS_PASSWORD",
     "method":"$SS_METHOD",
@@ -182,47 +193,57 @@ install_or_modify_ss() {
 EOF
 
     if [ $? -ne 0 ]; then
-        echo -e "${RED}配置文件生成失败，请检查权限或路径。${NC}"
-        return 1
+      echo -e "${RED}配置文件生成失败，请检查权限或路径。${NC}"
+      return 1
     fi
 
-    echo -e "${GREEN}配置文件已生成到: ${BLUE}$CONFIG_FILE${NC}"
-    echo -e "\n${YELLOW}正在设置 Shadowsocks-libev 开机启动并重启服务...${NC}"
+    echo -e "${GREEN}配置文件已生成。${NC}"
+    echo -e "\n${YELLOW}正在设置 Shadowsocks-libev 服务 (${instance_name}) 开机启动并重启...${NC}"
 
-    # 设置开机启动 (幂等操作，重复执行无害)
-    systemctl enable shadowsocks-libev > /dev/null 2>&1
-
-    # 重启服务以应用新配置
-    systemctl restart shadowsocks-libev
+    # 启动/启用服务
+    systemctl enable "${instance_name}" > /dev/null 2>&1
+    systemctl restart "${instance_name}"
 
     if [ $? -eq 0 ]; then
-        echo -e "${GREEN}Shadowsocks-libev 服务已成功重启并设置开机启动！${NC}"
-        echo -e "${BLUE}配置详情：${NC}"
-        echo -e "  ${BLUE}监听地址: ${GREEN}$SS_SERVER_ADDR_DEFAULT_DISPLAY${NC}" # 显示时使用易读的格式
-        echo -e "  ${BLUE}代理端口: ${GREEN}$SS_SERVER_PORT${NC}"
-        echo -e "  ${BLUE}加密方式: ${GREEN}$SS_METHOD${NC}"
-        echo -e "  ${BLUE}超时时间: ${GREEN}$SS_TIMEOUT${NC} 秒"
+      echo -e "${GREEN}Shadowsocks-libev 服务 (${instance_name}) 已成功重启并设置开机启动！${NC}"
+      echo -e "${BLUE}配置详情：${NC}"
+      echo -e "  ${BLUE}监听地址: ${GREEN}$SS_SERVER_ADDR${NC}"
+      echo -e "  ${BLUE}代理端口: ${GREEN}$SS_SERVER_PORT${NC}"
+      echo -e "  ${BLUE}加密方式: ${GREEN}$SS_METHOD${NC}"
+      echo -e "  ${BLUE}超时时间: ${GREEN}$SS_TIMEOUT${NC} 秒"
+      
+      # 生成并显示 SS 链接
+      echo -e "\n${GREEN}请复制以下 SS 链接到您的代理软件：${NC}"
+      NODE_LINK=$(generate_ss_link "$SS_SERVER_ADDR" "$SS_SERVER_PORT" "$SS_METHOD" "$SS_PASSWORD")
+      echo -e "${YELLOW}${NODE_LINK}${NC}"
+      echo -e "${BLUE}(提示：如果监听地址是0.0.0.0，请替换为您的服务器公网IP)${NC}"
+
     else
-        echo -e "${RED}Shadowsocks-libev 服务重启失败，请检查日志 (journalctl -u shadowsocks-libev.service) 获取更多信息。${NC}"
+      echo -e "${RED}Shadowsocks-libev 服务 (${instance_name}) 重启失败，请检查日志 (journalctl -u ${instance_name}.service) 获取更多信息。${NC}"
     fi
 
     echo -e "\n--- ${GREEN}配置完成${NC} ---"
-    echo -e "您可以运行 'systemctl status shadowsocks-libev' 来检查服务状态。"
+    echo -e "您可以运行 'systemctl status ${instance_name}' 来检查服务状态。"
 }
 
 # 卸载 Shadowsocks-libev
 uninstall_ss() {
     echo -e "\n--- ${RED}卸载 Shadowsocks-libev${NC} ---"
-    read -p "您确定要卸载 Shadowsocks-libev 吗？(y/N): " confirm
+    read -p "您确定要卸载 Shadowsocks-libev 及所有节点吗？(y/N): " confirm
     if [[ "$confirm" =~ ^[yY]$ ]]; then
-        echo -e "${YELLOW}正在停止并禁用 Shadowsocks-libev 服务...${NC}"
-        systemctl stop shadowsocks-libev > /dev/null 2>&1
-        systemctl disable shadowsocks-libev > /dev/null 2>&1
+        echo -e "${YELLOW}正在停止并禁用所有 Shadowsocks-libev 服务实例...${NC}"
+        # 查找所有 ss-libev 服务实例
+        systemctl list-units --type=service --state=active | grep "shadowsocks-libev" | awk '{print $1}' | while read -r service_name; do
+            echo -e "${YELLOW}停止并禁用: ${service_name}${NC}"
+            systemctl stop "$service_name" > /dev/null 2>&1
+            systemctl disable "$service_name" > /dev/null 2>&1
+        done
+
         echo -e "${YELLOW}正在卸载 shadowsocks-libev 软件包...${NC}"
         apt purge -y shadowsocks-libev > /dev/null 2>&1
-        echo -e "${YELLOW}正在删除配置文件...${NC}"
-        rm -f "$CONFIG_FILE"
-        echo -e "${GREEN}Shadowsocks-libev 已成功卸载。${NC}"
+        echo -e "${YELLOW}正在删除所有配置文件...${NC}"
+        rm -rf "$SS_CONFIG_DIR" # 删除整个配置目录
+        echo -e "${GREEN}Shadowsocks-libev 及所有节点已成功卸载。${NC}"
     else
         echo -e "${BLUE}卸载操作已取消。${NC}"
     fi
@@ -231,46 +252,176 @@ uninstall_ss() {
 # 查看运行状态
 check_status() {
     echo -e "\n--- ${BLUE}Shadowsocks-libev 运行状态${NC} ---"
-    systemctl status shadowsocks-libev
+    # 列出所有 shadowsocks-libev 服务实例的状态
+    systemctl list-units --type=service | grep "shadowsocks-libev" | awk '{print $1}' | while read -r service_name; do
+        echo -e "\n${BLUE}服务: ${service_name}${NC}"
+        systemctl status "$service_name" --no-pager
+    done
+    if ! systemctl list-units --type=service | grep -q "shadowsocks-libev"; then
+        echo -e "${YELLOW}未检测到 Shadowsocks-libev 服务实例。${NC}"
+    fi
 }
 
 # 停止服务
 stop_service() {
     echo -e "\n--- ${BLUE}停止 Shadowsocks-libev 服务${NC} ---"
-    systemctl stop shadowsocks-libev
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}Shadowsocks-libev 服务已停止。${NC}"
+    local config_files=$(find "$SS_CONFIG_DIR" -maxdepth 1 -name "*.json" -print 2>/dev/null)
+    if [ -z "$config_files" ]; then
+        echo -e "${YELLOW}未检测到 Shadowsocks-libev 配置文件，没有可停止的服务实例。${NC}"
+        return
+    fi
+
+    echo -e "${YELLOW}请选择要停止的服务实例：${NC}"
+    local i=1
+    local services=()
+    # 遍历已知的配置文件来列出服务实例
+    for cfg in $config_files; do
+        local port=$(jq -r '.server_port' "$cfg" 2>/dev/null)
+        local service_name="shadowsocks-libev@${port}.service"
+        if [ "$cfg" = "${SS_CONFIG_DIR}/config.json" ]; then # 默认主实例
+            service_name="shadowsocks-libev.service"
+        fi
+        services+=("$service_name")
+        echo -e "  ${BLUE}${i}.${NC} ${service_name}"
+        i=$((i+1))
+    done
+    echo -e "  ${BLUE}0.${NC} 返回主菜单"
+
+    read -p "请输入选择 (0-$((i-1))): " choice
+    if [ "$choice" -eq 0 ]; then
+        echo -e "${BLUE}操作已取消。${NC}"
+        return
+    elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le $((i-1)) ]; then
+        local selected_service=${services[$((choice-1))]}
+        systemctl stop "$selected_service"
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}服务 '${selected_service}' 已停止。${NC}"
+        else
+            echo -e "${RED}停止服务 '${selected_service}' 失败，请检查。${NC}"
+        fi
     else
-        echo -e "${RED}停止服务失败，请检查。${NC}"
+        echo -e "${RED}无效的选择。${NC}"
     fi
 }
 
 # 重启服务
 restart_service() {
     echo -e "\n--- ${BLUE}重启 Shadowsocks-libev 服务${NC} ---"
-    systemctl restart shadowsocks-libev
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}Shadowsocks-libev 服务已重启。${NC}"
+    local config_files=$(find "$SS_CONFIG_DIR" -maxdepth 1 -name "*.json" -print 2>/dev/null)
+    if [ -z "$config_files" ]; then
+        echo -e "${YELLOW}未检测到 Shadowsocks-libev 配置文件，没有可重启的服务实例。${NC}"
+        return
+    fi
+
+    echo -e "${YELLOW}请选择要重启的服务实例：${NC}"
+    local i=1
+    local services=()
+    for cfg in $config_files; do
+        local port=$(jq -r '.server_port' "$cfg" 2>/dev/null)
+        local service_name="shadowsocks-libev@${port}.service"
+        if [ "$cfg" = "${SS_CONFIG_DIR}/config.json" ]; then # 默认主实例
+            service_name="shadowsocks-libev.service"
+        fi
+        services+=("$service_name")
+        echo -e "  ${BLUE}${i}.${NC} ${service_name}"
+        i=$((i+1))
+    done
+    echo -e "  ${BLUE}0.${NC} 返回主菜单"
+
+    read -p "请输入选择 (0-$((i-1))): " choice
+    if [ "$choice" -eq 0 ]; then
+        echo -e "${BLUE}操作已取消。${NC}"
+        return
+    elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le $((i-1)) ]; then
+        local selected_service=${services[$((choice-1))]}
+        systemctl restart "$selected_service"
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}服务 '${selected_service}' 已重启。${NC}"
+        else
+            echo -e "${RED}重启服务 '${selected_service}' 失败，请检查。${NC}"
+        fi
     else
-        echo -e "${RED}重启服务失败，请检查。${NC}"
+        echo -e "${RED}无效的选择。${NC}"
     fi
 }
 
 # 查看当前配置
 view_current_config() {
     echo -e "\n--- ${BLUE}当前 Shadowsocks-libev 配置${NC} ---"
-    if [ -f "$CONFIG_FILE" ] && command -v jq &> /dev/null; then
-        echo -e "${YELLOW}配置文件路径: ${BLUE}$CONFIG_FILE${NC}"
-        echo -e "${YELLOW}内容：${NC}"
-        jq . "$CONFIG_FILE" | while IFS= read -r line; do
-            echo -e "  ${GREEN}$line${NC}" # 输出JSON内容并着色
-        done
-        echo -e "\n${BLUE}注意：出于安全考虑，密码在此处不直接显示明文。${NC}"
-    else
-        echo -e "${RED}配置文件 '$CONFIG_FILE' 不存在或 'jq' 未安装，无法显示当前配置。${NC}"
-        echo -e "${YELLOW}请先运行 '安装/修改 Shadowsocks-libev' 选项来配置。${NC}"
+    if ! command -v jq &> /dev/null; then
+        echo -e "${RED}'jq' 命令未安装，无法解析配置文件。请先安装 jq。${NC}"
+        return
     fi
+
+    local config_files=$(find "$SS_CONFIG_DIR" -maxdepth 1 -name "*.json" -print 2>/dev/null)
+    if [ -z "$config_files" ]; then
+        echo -e "${RED}未检测到 Shadowsocks-libev 配置文件。请先运行 '安装 Shadowsocks-libev' 进行配置。${NC}"
+        return
+    fi
+
+    for cfg in $config_files; do
+        echo -e "\n${YELLOW}--- 配置文件: ${BLUE}$cfg${NC} ---"
+        if [ -f "$cfg" ]; then
+            local server_addr=$(jq -r '.server | if type == "array" then join(", ") else . end' "$cfg" 2>/dev/null)
+            local server_port=$(jq -r '.server_port' "$cfg" 2>/dev/null)
+            local password=$(jq -r '.password' "$cfg" 2>/dev/null)
+            local method=$(jq -r '.method' "$cfg" 2>/dev/null)
+            local timeout=$(jq -r '.timeout' "$cfg" 2>/dev/null)
+
+            echo -e "  ${BLUE}监听地址: ${GREEN}$server_addr${NC}"
+            echo -e "  ${BLUE}代理端口: ${GREEN}$server_port${NC}"
+            echo -e "  ${BLUE}加密方式: ${GREEN}$method${NC}"
+            echo -e "  ${BLUE}超时时间: ${GREEN}$timeout${NC} 秒"
+            echo -e "  ${BLUE}连接密码: ${GREEN}(已设置，此处不显示)${NC}"
+
+            echo -e "\n${GREEN}对应的 SS 链接 (可复制)：${NC}"
+            NODE_LINK=$(generate_ss_link "$server_addr" "$server_port" "$method" "$password")
+            echo -e "${YELLOW}${NODE_LINK}${NC}"
+            echo -e "${BLUE}(提示：如果监听地址是0.0.0.0，请替换为您的服务器公网IP)${NC}"
+
+        else
+            echo -e "${RED}文件不存在或无法读取。${NC}"
+        fi
+    done
+    echo -e "------------------------------------"
 }
+
+# 新增 SS 节点
+add_new_ss_node() {
+    echo -e "\n--- ${BLUE}新增 Shadowsocks 节点${NC} ---"
+    install_ss_libev # 确保 shadowsocks-libev 已安装
+    if [ $? -ne 0 ]; then return; fi
+    install_jq # 确保 jq 已安装
+    if [ $? -ne 0 ]; then return; fi
+
+    read -p "请输入新节点的端口号 (例如 8389): " NEW_PORT
+    while ! [[ "$NEW_PORT" =~ ^[0-9]+$ ]] || [ "$NEW_PORT" -lt 1 ] || [ "$NEW_PORT" -gt 65535 ]; do
+        echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
+        read -p "请重新输入新节点的端口号: " NEW_PORT
+    done
+
+    # 检查端口是否已被现有节点使用
+    local existing_ports=()
+    local config_files=$(find "$SS_CONFIG_DIR" -maxdepth 1 -name "*.json" -print 2>/dev/null)
+    for cfg in $config_files; do
+        local existing_port=$(jq -r '.server_port' "$cfg" 2>/dev/null)
+        existing_ports+=("$existing_port")
+    done
+
+    for p in "${existing_ports[@]}"; do
+        if [ "$p" = "$NEW_PORT" ]; then
+            echo -e "${RED}错误：端口 ${NEW_PORT} 已被现有 Shadowsocks 节点使用。请选择其他端口。${NC}"
+            return 1
+        fi
+    done
+
+    local new_config_file="${SS_CONFIG_DIR}/config-${NEW_PORT}.json"
+    local new_service_instance="shadowsocks-libev@${NEW_PORT}.service"
+
+    echo -e "${YELLOW}即将为新节点配置端口 ${NEW_PORT}，配置文件将是 ${new_config_file}${NC}"
+    configure_ss_node "$new_config_file" "$new_service_instance"
+}
+
 
 # 自动设置 'ss' 快捷方式
 setup_ss_shortcut() {
@@ -320,34 +471,39 @@ setup_ss_shortcut() {
 main_menu() {
     clear
     echo -e "--- ${GREEN}Shadowsocks-libev 管理脚本${NC} ---"
-    echo -e "${BLUE}1.${NC} ${YELLOW}安装/修改 Shadowsocks-libev 配置${NC}"
-    echo -e "${BLUE}2.${NC} ${RED}卸载 Shadowsocks-libev${NC}"
-    echo -e "${BLUE}3.${NC} ${GREEN}查看 Shadowsocks-libev 运行状态${NC}"
-    echo -e "${BLUE}4.${NC} ${YELLOW}停止 Shadowsocks-libev 服务${NC}"
-    echo -e "${BLUE}5.${NC} ${YELLOW}重启 Shadowsocks-libev 服务${NC}"
-    echo -e "${BLUE}6.${NC} ${GREEN}查看当前 Shadowsocks-libev 配置${NC}"
+    echo -e "${BLUE}1.${NC} ${YELLOW}安装/重新配置默认节点 (端口: 12306 等)${NC}" # 变为重新配置
+    echo -e "${BLUE}2.${NC} ${YELLOW}新增 Shadowsocks 节点${NC}" # 新增功能
+    echo -e "${BLUE}3.${NC} ${RED}卸载 Shadowsocks-libev 及所有节点${NC}"
+    echo -e "${BLUE}4.${NC} ${GREEN}查看所有 Shadowsocks 节点运行状态${NC}"
+    echo -e "${BLUE}5.${NC} ${YELLOW}停止 Shadowsocks 服务实例${NC}"
+    echo -e "${BLUE}6.${NC} ${YELLOW}重启 Shadowsocks 服务实例${NC}"
+    echo -e "${BLUE}7.${NC} ${GREEN}查看所有 Shadowsocks 节点当前配置及 SS 链接${NC}" # 增强功能
     echo -e "${BLUE}0.${NC} ${YELLOW}退出${NC}"
     echo -e "------------------------------------"
-    read -p "请选择一个操作 (0-6): " choice
+    read -p "请选择一个操作 (0-7): " choice
     echo ""
 
     case "$choice" in
         1)
-            install_or_modify_ss
+            # 默认主实例配置文件路径和名称
+            configure_ss_node "${SS_CONFIG_DIR}/config.json" "shadowsocks-libev.service"
             ;;
         2)
-            uninstall_ss
+            add_new_ss_node
             ;;
         3)
-            check_status
+            uninstall_ss
             ;;
         4)
-            stop_service
+            check_status
             ;;
         5)
-            restart_service
+            stop_service
             ;;
         6)
+            restart_service
+            ;;
+        7)
             view_current_config
             ;;
         0)
