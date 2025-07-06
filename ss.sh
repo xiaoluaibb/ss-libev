@@ -40,14 +40,32 @@ install_jq() {
 
 # 获取当前配置参数
 get_current_config() {
-    SS_SERVER_ADDR_DEFAULT="0.0.0.0"
+    # 这些是硬编码的默认值，当配置文件不存在或jq无法读取时使用
+    SS_SERVER_ADDR_DEFAULT_DISPLAY="0.0.0.0" # 用于显示在提示中
+    SS_SERVER_ADDR_DEFAULT_RAW="\"0.0.0.0\""  # 用于实际写入配置文件
+
     SS_SERVER_PORT_DEFAULT="8388"
     SS_PASSWORD_DEFAULT=""
     SS_METHOD_DEFAULT="chacha20-ietf-poly1305"
     SS_TIMEOUT_DEFAULT="300"
 
+    # 尝试从现有配置文件中读取值
     if [ -f "$CONFIG_FILE" ] && command -v jq &> /dev/null; then
-        SS_SERVER_ADDR_DEFAULT=$(jq -r '.server // "0.0.0.0"' "$CONFIG_FILE")
+        SERVER_VALUE=$(jq -r '.server' "$CONFIG_FILE")
+        SERVER_TYPE=$(jq -r '.server | type' "$CONFIG_FILE")
+
+        if [ "$SERVER_TYPE" == "array" ]; then
+            # 如果是数组，格式化为逗号分隔字符串用于显示
+            SS_SERVER_ADDR_DEFAULT_DISPLAY=$(echo "$SERVER_VALUE" | jq -r 'join(", ")')
+            # 原始 JSON 数组字符串用于写入配置文件
+            SS_SERVER_ADDR_DEFAULT_RAW="$SERVER_VALUE"
+        else
+            # 如果是字符串，直接使用
+            SS_SERVER_ADDR_DEFAULT_DISPLAY="$SERVER_VALUE"
+            # 确保是带引号的 JSON 字符串用于写入配置文件
+            SS_SERVER_ADDR_DEFAULT_RAW="\"$SERVER_VALUE\""
+        fi
+        
         SS_SERVER_PORT_DEFAULT=$(jq -r '.server_port // 8388' "$CONFIG_FILE")
         SS_PASSWORD_DEFAULT=$(jq -r '.password // ""' "$CONFIG_FILE")
         SS_METHOD_DEFAULT=$(jq -r '.method // "chacha20-ietf-poly1305"' "$CONFIG_FILE")
@@ -80,10 +98,14 @@ install_or_modify_ss() {
     echo -e "${YELLOW}(如果您想保持当前值，可以直接回车使用默认或现有值)${NC}"
 
     # 询问监听地址
-    read -p "请输入 Shadowsocks 监听地址 (当前: ${BLUE}$SS_SERVER_ADDR_DEFAULT${NC}): " SS_SERVER_ADDR
-    if [ -z "$SS_SERVER_ADDR" ]; then
-        SS_SERVER_ADDR="$SS_SERVER_ADDR_DEFAULT"
-        echo -e "${GREEN}使用默认监听地址: ${SS_SERVER_ADDR}${NC}"
+    read -p "请输入 Shadowsocks 监听地址 (当前: ${BLUE}$SS_SERVER_ADDR_DEFAULT_DISPLAY${NC}): " SS_SERVER_ADDR_INPUT
+    if [ -z "$SS_SERVER_ADDR_INPUT" ]; then
+        # 如果用户回车，使用原始的 JSON 格式
+        SS_SERVER_ADDR="$SS_SERVER_ADDR_DEFAULT_RAW"
+        echo -e "${GREEN}使用默认监听地址: ${SS_SERVER_ADDR_DEFAULT_DISPLAY}${NC}"
+    else
+        # 如果用户输入了新值，将其作为字符串处理
+        SS_SERVER_ADDR="\"$SS_SERVER_ADDR_INPUT\""
     fi
 
     # 询问代理端口
@@ -106,7 +128,7 @@ install_or_modify_ss() {
     done
 
     # 询问密码 (显示输入)
-    read -p "请输入 Shadowsocks 连接密码 (当前${YELLOW}（不显示）${NC}，留空将使用现有密码): " SS_PASSWORD_INPUT
+    read -p "请输入 Shadowsocks 连接密码 (留空将使用现有密码，当前密码${YELLOW}不显示${NC}): " SS_PASSWORD_INPUT
     if [ -z "$SS_PASSWORD_INPUT" ]; then
         SS_PASSWORD="$SS_PASSWORD_DEFAULT"
         if [ -z "$SS_PASSWORD" ]; then
@@ -157,10 +179,10 @@ install_or_modify_ss() {
 
     echo -e "\n${YELLOW}正在生成 Shadowsocks-libev 配置文件...${NC}"
 
-    # 创建配置文件内容
+    # 创建配置文件内容 - server 字段直接使用 SS_SERVER_ADDR，它现在已经是引号或数组格式
     cat <<EOF > "$CONFIG_FILE"
 {
-    "server":"$SS_SERVER_ADDR",
+    "server":$SS_SERVER_ADDR,
     "server_port":$SS_SERVER_PORT,
     "password":"$SS_PASSWORD",
     "method":"$SS_METHOD",
@@ -186,7 +208,7 @@ EOF
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}Shadowsocks-libev 服务已成功重启并设置开机启动！${NC}"
         echo -e "${BLUE}配置详情：${NC}"
-        echo -e "  ${BLUE}监听地址: ${GREEN}$SS_SERVER_ADDR${NC}"
+        echo -e "  ${BLUE}监听地址: ${GREEN}$SS_SERVER_ADDR_DEFAULT_DISPLAY${NC}" # 显示时使用易读的格式
         echo -e "  ${BLUE}代理端口: ${GREEN}$SS_SERVER_PORT${NC}"
         echo -e "  ${BLUE}加密方式: ${GREEN}$SS_METHOD${NC}"
         echo -e "  ${BLUE}超时时间: ${GREEN}$SS_TIMEOUT${NC} 秒"
@@ -204,10 +226,10 @@ uninstall_ss() {
     read -p "您确定要卸载 Shadowsocks-libev 吗？(y/N): " confirm
     if [[ "$confirm" =~ ^[yY]$ ]]; then
         echo -e "${YELLOW}正在停止并禁用 Shadowsocks-libev 服务...${NC}"
-        systemctl stop shadowsocks-libev
-        systemctl disable shadowsocks-libev
+        systemctl stop shadowsocks-libev > /dev/null 2>&1
+        systemctl disable shadowsocks-libev > /dev/null 2>&1
         echo -e "${YELLOW}正在卸载 shadowsocks-libev 软件包...${NC}"
-        apt purge -y shadowsocks-libev
+        apt purge -y shadowsocks-libev > /dev/null 2>&1
         echo -e "${YELLOW}正在删除配置文件...${NC}"
         rm -f "$CONFIG_FILE"
         echo -e "${GREEN}Shadowsocks-libev 已成功卸载。${NC}"
