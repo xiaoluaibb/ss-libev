@@ -51,21 +51,11 @@ get_current_config() {
 
     # 尝试从现有配置文件中读取值
     if [ -f "$CONFIG_FILE" ] && command -v jq &> /dev/null; then
-        SERVER_VALUE=$(jq -r '.server' "$CONFIG_FILE")
-        SERVER_TYPE=$(jq -r '.server | type' "$CONFIG_FILE")
+        # 获取用于显示的地址：如果是数组则用逗号连接，否则直接取值
+        SS_SERVER_ADDR_DEFAULT_DISPLAY=$(jq -r '.server | if type == "array" then join(", ") else . end' "$CONFIG_FILE")
+        # 获取用于写入配置文件的原始JSON格式地址：带引号的字符串或原始数组
+        SS_SERVER_ADDR_DEFAULT_RAW=$(jq '.server' "$CONFIG_FILE") # 不加 -r 以保留JSON格式
 
-        if [ "$SERVER_TYPE" == "array" ]; then
-            # 如果是数组，格式化为逗号分隔字符串用于显示
-            SS_SERVER_ADDR_DEFAULT_DISPLAY=$(echo "$SERVER_VALUE" | jq -r 'join(", ")')
-            # 原始 JSON 数组字符串用于写入配置文件
-            SS_SERVER_ADDR_DEFAULT_RAW="$SERVER_VALUE"
-        else
-            # 如果是字符串，直接使用
-            SS_SERVER_ADDR_DEFAULT_DISPLAY="$SERVER_VALUE"
-            # 确保是带引号的 JSON 字符串用于写入配置文件
-            SS_SERVER_ADDR_DEFAULT_RAW="\"$SERVER_VALUE\""
-        fi
-        
         SS_SERVER_PORT_DEFAULT=$(jq -r '.server_port // 8388' "$CONFIG_FILE")
         SS_PASSWORD_DEFAULT=$(jq -r '.password // ""' "$CONFIG_FILE")
         SS_METHOD_DEFAULT=$(jq -r '.method // "chacha20-ietf-poly1305"' "$CONFIG_FILE")
@@ -100,11 +90,11 @@ install_or_modify_ss() {
     # 询问监听地址
     read -p "请输入 Shadowsocks 监听地址 (当前: ${BLUE}$SS_SERVER_ADDR_DEFAULT_DISPLAY${NC}): " SS_SERVER_ADDR_INPUT
     if [ -z "$SS_SERVER_ADDR_INPUT" ]; then
-        # 如果用户回车，使用原始的 JSON 格式
+        # 如果用户回车，使用原始的 JSON 格式 (SS_SERVER_ADDR_DEFAULT_RAW 已经包含引号或数组结构)
         SS_SERVER_ADDR="$SS_SERVER_ADDR_DEFAULT_RAW"
         echo -e "${GREEN}使用默认监听地址: ${SS_SERVER_ADDR_DEFAULT_DISPLAY}${NC}"
     else
-        # 如果用户输入了新值，将其作为字符串处理
+        # 如果用户输入了新值，将其作为字符串处理，并加上引号
         SS_SERVER_ADDR="\"$SS_SERVER_ADDR_INPUT\""
     fi
 
