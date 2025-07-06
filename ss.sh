@@ -55,22 +55,38 @@ install_ss_libev() {
     return 0
 }
 
+# 获取公网 IP 地址
+get_public_ip() {
+    echo -e "${YELLOW}正在尝试获取服务器公网 IP 地址...${NC}"
+    local public_ip=""
+    # 尝试从多个源获取 IPv4 地址
+    public_ip=$(curl -s4 "https://icanhazip.com" || curl -s4 "https://ident.me" || curl -s4 "http://ip.sb")
+    
+    if [ -n "$public_ip" ]; then
+        echo -e "${GREEN}成功获取到公网 IP: ${public_ip}${NC}"
+        echo "$public_ip"
+    else
+        echo -e "${RED}未能获取到公网 IP 地址。请检查网络连接或手动指定 IP。${NC}"
+        return 1
+    fi
+}
+
+
 # 生成 SS 链接函数 (将参数编码为 base64)
 generate_ss_link() {
-    local server_addr_display=$1 # 用于显示的地址，可能是 "0.0.0.0" 或 "::1, 0.0.0.0"
+    local server_addr_display=$1 # 这个参数现在将是实际服务器IP
     local server_port=$2
     local method=$3
     local password=$4
 
-    # 对于SS链接，通常只使用一个IP或通用地址。如果显示是多个，统一用 0.0.0.0
-    local server_addr_for_link="0.0.0.0" 
-    if [[ "$server_addr_display" == "0.0.0.0" ]]; then
+    local server_addr_for_link=""
+    local public_ip=$(get_public_ip) # 获取公网 IP
+    
+    if [ -z "$public_ip" ]; then
+        echo -e "${RED}警告：未能获取到公网 IP，SS 链接将使用 '0.0.0.0'。请手动替换。${NC}"
         server_addr_for_link="0.0.0.0"
-    elif [[ "$server_addr_display" == *","* ]]; then
-        # 如果是多IP列表，统一用 "0.0.0.0" 表示
-        server_addr_for_link="0.0.0.0" 
     else
-        server_addr_for_link="$server_addr_display"
+        server_addr_for_link="$public_ip"
     fi
 
     # 对密码和方法进行Base64编码
@@ -267,7 +283,7 @@ EOF
       echo -e "\n${GREEN}请复制以下 SS 链接到您的代理软件：${NC}"
       NODE_LINK=$(generate_ss_link "$SS_SERVER_ADDR_DISPLAY" "$SS_SERVER_PORT" "$SS_METHOD" "$SS_PASSWORD")
       echo -e "${YELLOW}${NODE_LINK}${NC}"
-      echo -e "${BLUE}(提示：如果监听地址是0.0.0.0或包含多个地址，请替换为您的服务器公网IP)${NC}"
+      echo -e "${BLUE}(提示：SS 链接中的 IP 地址已自动尝试获取您的公网 IP)${NC}"
 
     else
       echo -e "${RED}Shadowsocks-libev 服务 (${service_instance}) 启动失败，请检查日志 (journalctl -u ${service_instance}) 获取更多信息。${NC}"
@@ -454,6 +470,8 @@ view_current_config() {
         return
     fi
 
+    local public_ip=$(get_public_ip) # 提前获取公网IP
+
     for cfg in $config_files; do
         echo -e "\n${YELLOW}--- 配置文件: ${BLUE}$cfg${NC} ---"
         if [ -f "$cfg" ]; then
@@ -478,9 +496,10 @@ view_current_config() {
             echo -e "  ${BLUE}连接密码: ${GREEN}(已设置，此处不显示)${NC}"
 
             echo -e "\n${GREEN}对应的 SS 链接 (可复制)：${NC}"
-            NODE_LINK=$(generate_ss_link "$server_addr_display" "$server_port" "$method" "$password")
+            # 这里调用 generate_ss_link 时，传递获取到的公网IP，而不是配置文件中的监听地址
+            NODE_LINK=$(generate_ss_link "$public_ip" "$server_port" "$method" "$password")
             echo -e "${YELLOW}${NODE_LINK}${NC}"
-            echo -e "${BLUE}(提示：如果监听地址是0.0.0.0或包含多个地址，请替换为您的服务器公网IP)${NC}"
+            echo -e "${BLUE}(提示：SS 链接中的 IP 地址已自动尝试获取您的公网 IP)${NC}"
 
         else
             echo -e "${RED}文件不存在或无法读取。${NC}"
