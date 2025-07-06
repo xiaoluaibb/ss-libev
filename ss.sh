@@ -51,7 +51,7 @@ install_ss_libev() {
         echo -e "${GREEN}shadowsocks-libev 安装完成。${NC}"
     else
         echo -e "${GREEN}'shadowsocks-libev' 已安装。${NC}"
-    fi
+    fi # 这一行是之前多余的 `}` 导致错误的地方，已经修正
     return 0
 }
 
@@ -144,7 +144,7 @@ configure_ss_node() {
         echo -e "${GREEN}使用默认代理端口: ${SS_SERVER_PORT}${NC}"
     else
         SS_SERVER_PORT="$SS_SERVER_PORT_INPUT"
-    }
+    fi
     while ! [[ "$SS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$SS_SERVER_PORT" -lt 1 ] || [ "$SS_SERVER_PORT" -gt 65535 ]; do
         echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
         read -p "请输入 Shadowsocks 代理端口 (默认: ${DEFAULT_SS_SERVER_PORT}): " SS_SERVER_PORT_INPUT
@@ -455,7 +455,7 @@ restart_service() {
             services_to_manage+=("$service_name")
             echo -e "  ${BLUE}${i}.${NC} ${service_name}"
             i=$((i+1))
-        has_services=true
+            has_services=true
         fi
     done
 
