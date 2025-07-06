@@ -89,12 +89,19 @@ configure_ss_node() {
 
     echo -e "\n--- ${BLUE}配置 Shadowsocks 节点: ${instance_name}${NC} ---"
 
+    # 在尝试创建配置文件之前，先确保目录存在
+    mkdir -p "$SS_CONFIG_DIR"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}错误：无法创建配置目录 '${SS_CONFIG_DIR}'。请检查权限。${NC}"
+        return 1
+    fi
+
     # 硬编码默认参数
     local DEFAULT_SS_SERVER_ADDR_IPV4="0.0.0.0"
     local DEFAULT_SS_SERVER_ADDR_IPV4_IPV6='["::1", "0.0.0.0"]' # JSON 数组字符串
     local DEFAULT_SS_SERVER_PORT="12306"
     local DEFAULT_SS_PASSWORD="your_strong_password"
-    local DEFAULT_SS_METHOD="aes-256-gcm"
+    local DEFAULT_SS_METHOD="aes-256-gcm" # 默认加密方式
     local DEFAULT_SS_TIMEOUT="300"
 
     # 如果是新增节点，默认端口从实例名中提取
@@ -110,8 +117,8 @@ configure_ss_node() {
 
     # 询问监听地址类型
     echo -e "\n${YELLOW}请选择 Shadowsocks 监听地址类型：${NC}"
-    echo -e "  ${BLUE}1.${NC} 仅 IPv4 (默认: ${DEFAULT_SS_SERVER_ADDR_IPV4})${NC}"
-    echo -e "  ${BLUE}2.${NC} IPv4 和 IPv6 (默认: ${DEFAULT_SS_SERVER_ADDR_IPV4_IPV6})${NC}"
+    echo -e "  ${BLUE}1.${NC} 仅 IPv4 (默认监听地址: ${DEFAULT_SS_SERVER_ADDR_IPV4})${NC}"
+    echo -e "  ${BLUE}2.${NC} IPv4 和 IPv6 (默认监听地址: ${DEFAULT_SS_SERVER_ADDR_IPV4_IPV6})${NC}"
     read -p "请输入选择 (1或2, 默认1): " ADDR_TYPE_CHOICE
     
     case "$ADDR_TYPE_CHOICE" in
@@ -155,20 +162,41 @@ configure_ss_node() {
         SS_PASSWORD="$SS_PASSWORD_INPUT"
     fi
 
-    # 询问加密方式
-    echo "可用的加密方式："
-    echo -e "  ${GREEN}aes-256-gcm (推荐)${NC}"
-    echo "  aes-192-gcm"
-    echo "  aes-128-gcm"
-    echo -e "  ${GREEN}chacha20-ietf-poly1305 (推荐)${NC}"
-    echo "  xchacha20-ietf-poly1305"
-    read -p "请输入 Shadowsocks 加密方式 (默认: ${DEFAULT_SS_METHOD}): " SS_METHOD_INPUT
-    if [ -z "$SS_METHOD_INPUT" ]; then
-        SS_METHOD="$DEFAULT_SS_METHOD"
+    # 询问加密方式 - 使用带序号的列表
+    echo -e "\n${YELLOW}请选择 Shadowsocks 加密方式：${NC}"
+    local CRYPTO_METHODS=(
+        "aes-256-gcm"
+        "aes-192-gcm"
+        "aes-128-gcm"
+        "chacha20-ietf-poly1305"
+        "xchacha20-ietf-poly1305"
+        "2022-blake3-aes-256-gcm" # Shadow-tls v3 推荐
+        "none" # 通常不推荐，用于调试
+        # 您可以在此添加更多支持的加密方式
+    )
+    local default_method_index=-1
+    for i in "${!CRYPTO_METHODS[@]}"; do
+        if [[ "${CRYPTO_METHODS[$i]}" == "$DEFAULT_SS_METHOD" ]]; then
+            default_method_index=$i
+        fi
+        echo -e "  ${BLUE}$((i+1)).${NC} ${CRYPTO_METHODS[$i]}" $( [[ "${CRYPTO_METHODS[$i]}" == "aes-256-gcm" || "${CRYPTO_METHODS[$i]}" == "chacha20-ietf-poly1305" ]] && echo "(推荐)" || echo "" ) ${NC}
+    done
+
+    local SS_METHOD_CHOICE
+    read -p "请输入选择 (1-${#CRYPTO_METHODS[@]}, 默认 $((default_method_index+1))): " SS_METHOD_CHOICE_INPUT
+    if [ -z "$SS_METHOD_CHOICE_INPUT" ]; then
+        SS_METHOD="${CRYPTO_METHODS[$default_method_index]}"
         echo -e "${GREEN}使用默认加密方式: ${SS_METHOD}${NC}"
     else
-        SS_METHOD="$SS_METHOD_INPUT"
+        if [[ "$SS_METHOD_CHOICE_INPUT" =~ ^[0-9]+$ ]] && [ "$SS_METHOD_CHOICE_INPUT" -ge 1 ] && [ "$SS_METHOD_CHOICE_INPUT" -le ${#CRYPTO_METHODS[@]} ]; then
+            SS_METHOD="${CRYPTO_METHODS[$((SS_METHOD_CHOICE_INPUT-1))]}"
+            echo -e "${GREEN}已选择加密方式: ${SS_METHOD}${NC}"
+        else
+            echo -e "${RED}无效的选择，将使用默认加密方式: ${DEFAULT_SS_METHOD}${NC}"
+            SS_METHOD="$DEFAULT_SS_METHOD"
+        fi
     fi
+
 
     # 询问超时时间
     read -p "请输入 Shadowsocks 超时时间 (秒, 默认: ${DEFAULT_SS_TIMEOUT}): " SS_TIMEOUT_INPUT
@@ -260,6 +288,8 @@ uninstall_ss() {
         rm -f "$SS_COMMAND_LINK"   # 删除快捷方式
 
         echo -e "${GREEN}Shadowsocks-libev、所有节点及脚本已成功卸载。${NC}"
+        # 卸载完成后直接退出
+        exit 0
     else
         echo -e "${BLUE}卸载操作已取消。${NC}"
     fi
@@ -466,6 +496,9 @@ setup_ss_shortcut() {
         CURRENT_SCRIPT_PATH="$SCRIPT_TARGET_PATH"
     else
         echo -e "${GREEN}脚本已位于 '${SCRIPT_TARGET_PATH}'，无需移动。${NC}"
+    fi
+
+    # 检查当前脚本内容与目标路径内容是否一致，不一致则更新
     LATEST_SCRIPT_CONTENT=$(cat "$0")
     if ! diff -q <(cat "$SCRIPT_TARGET_PATH") <(echo "$LATEST_SCRIPT_CONTENT") >/dev/null 2>&1; then
         echo -e "${YELLOW}检测到脚本已更新，正在更新脚本文件...${NC}"
@@ -479,7 +512,6 @@ setup_ss_shortcut() {
         echo -e "${GREEN}脚本已是最新版本。${NC}"
     fi
 
-    fi
 
     # 确保脚本有执行权限
     echo -e "${YELLOW}正在确保脚本 '${SCRIPT_TARGET_PATH}' 具有执行权限...${NC}"
@@ -508,13 +540,13 @@ setup_ss_shortcut() {
 main_menu() {
     clear
     echo -e "--- ${GREEN}Shadowsocks-libev 管理脚本${NC} ---"
-    echo -e "${BLUE}1.${NC} ${YELLOW}安装/重新配置默认节点 (端口: 12306 等)${NC}" # 变为重新配置
-    echo -e "${BLUE}2.${NC} ${YELLOW}新增 Shadowsocks 节点${NC}" # 新增功能
+    echo -e "${BLUE}1.${NC} ${YELLOW}安装/重新配置默认节点 (端口: 12306 等)${NC}"
+    echo -e "${BLUE}2.${NC} ${YELLOW}新增 Shadowsocks 节点${NC}"
     echo -e "${BLUE}3.${NC} ${RED}卸载 Shadowsocks-libev 及所有节点${NC}"
     echo -e "${BLUE}4.${NC} ${GREEN}查看所有 Shadowsocks 节点运行状态${NC}"
     echo -e "${BLUE}5.${NC} ${YELLOW}停止 Shadowsocks 服务实例${NC}"
     echo -e "${BLUE}6.${NC} ${YELLOW}重启 Shadowsocks 服务实例${NC}"
-    echo -e "${BLUE}7.${NC} ${GREEN}查看所有 Shadowsocks 节点当前配置及 SS 链接${NC}" # 增强功能
+    echo -e "${BLUE}7.${NC} ${GREEN}查看所有 Shadowsocks 节点当前配置及 SS 链接${NC}"
     echo -e "${BLUE}0.${NC} ${YELLOW}退出${NC}"
     echo -e "------------------------------------"
     read -p "请选择一个操作 (0-7): " choice
@@ -530,7 +562,7 @@ main_menu() {
             ;;
         3)
             uninstall_ss
-            ;;
+            ;; # 卸载函数内部已包含退出逻辑
         4)
             check_status
             ;;
