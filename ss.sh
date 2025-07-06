@@ -51,7 +51,7 @@ install_ss_libev() {
         echo -e "${GREEN}shadowsocks-libev 安装完成。${NC}"
     else
         echo -e "${GREEN}'shadowsocks-libev' 已安装。${NC}"
-    fi # 这一行是之前多余的 `}` 导致错误的地方，已经修正
+    fi
     return 0
 }
 
@@ -330,8 +330,22 @@ uninstall_ss() {
         fi
 
         echo -e "${YELLOW}强制终止所有残留的 ss-server 进程...${NC}"
-        # 使用 pgrep 查找 ss-server 进程并终止
-        pkill -f "ss-server -c" > /dev/null 2>&1 || true
+        # 使用 pgrep 查找 ss-server 进程并终止 (更强制的方式)
+        PIDS=$(pgrep -f "ss-server")
+        if [ -n "$PIDS" ]; then
+            echo -e "${YELLOW}检测到以下 ss-server 进程 PID: ${PIDS}，正在强制终止...${NC}"
+            kill -9 $PIDS > /dev/null 2>&1 || true
+            sleep 1 # 等待进程终止
+            # 再次检查是否终止
+            PIDS_AFTER_KILL=$(pgrep -f "ss-server")
+            if [ -n "$PIDS_AFTER_KILL" ]; then
+                echo -e "${RED}警告：部分 ss-server 进程未能被终止 (PID: ${PIDS_AFTER_KILL})。您可能需要手动检查。${NC}"
+            else
+                echo -e "${GREEN}所有 ss-server 进程已成功终止。${NC}"
+            fi
+        else
+            echo -e "${YELLOW}未检测到正在运行的 ss-server 进程。${NC}"
+        fi
 
         echo -e "${YELLOW}正在卸载 shadowsocks-libev 软件包...${NC}"
         apt purge -y shadowsocks-libev > /dev/null 2>&1
@@ -383,6 +397,31 @@ check_status() {
     if [ "$found_services" = false ]; then
         echo -e "${YELLOW}未检测到 Shadowsocks-libev 服务实例。${NC}"
     fi
+    echo -e "\n${BLUE}正在检查是否有残留的 ss-server 进程...${NC}"
+    if command -v pgrep &> /dev/null; then
+        local ss_pids=$(pgrep -f "ss-server")
+        if [ -n "$ss_pids" ]; then
+            echo -e "${RED}检测到以下 ss-server 进程仍在运行 (PID: ${ss_pids})：${NC}"
+            ps -fp "$ss_pids"
+        else
+            echo -e "${GREEN}未检测到 ss-server 进程。${NC}"
+        fi
+    else
+        echo -e "${YELLOW}警告：pgrep 命令未找到，无法检查残留进程。${NC}"
+        echo -e "${YELLOW}请尝试手动运行 'ps aux | grep ss-server' 检查。${NC}"
+    fi
+
+    echo -e "\n${BLUE}正在检查 12306 端口使用情况...${NC}"
+    if command -v lsof &> /dev/null; then
+        lsof -i:12306
+        if [ $? -ne 0 ]; then
+            echo -e "${GREEN}端口 12306 未被占用。${NC}"
+        fi
+    else
+        echo -e "${YELLOW}警告：lsof 命令未找到，无法检查端口占用情况。${NC}"
+        echo -e "${YELLOW}请尝试手动运行 'netstat -tulnp | grep 12306' 或 'ss -tulnp | grep 12306' 检查。${NC}"
+    fi
+
 }
 
 # 停止服务
