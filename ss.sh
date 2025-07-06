@@ -13,9 +13,7 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# 脚本的最终目标路径和快捷方式名称
-SCRIPT_TARGET_PATH="/usr/local/bin/ss.sh"
-SS_COMMAND_LINK="/usr/local/bin/ss"
+# 配置文件目录 (脚本不再移动，但配置文件仍在这里)
 SS_CONFIG_DIR="/etc/shadowsocks-libev" # Shadowsocks 配置文件目录
 
 # --- 函数定义 ---
@@ -283,11 +281,7 @@ uninstall_ss() {
         echo -e "${YELLOW}正在删除所有配置文件...${NC}"
         rm -rf "$SS_CONFIG_DIR" # 删除整个配置目录
 
-        echo -e "${YELLOW}正在删除脚本文件及快捷方式...${NC}"
-        rm -f "$SCRIPT_TARGET_PATH" # 删除脚本本身
-        rm -f "$SS_COMMAND_LINK"   # 删除快捷方式
-
-        echo -e "${GREEN}Shadowsocks-libev、所有节点及脚本已成功卸载。${NC}"
+        echo -e "${GREEN}Shadowsocks-libev、所有节点已成功卸载。${NC}"
         # 卸载完成后直接退出
         exit 0
     else
@@ -477,64 +471,6 @@ add_new_ss_node() {
 }
 
 
-# 自动设置 'ss' 快捷方式
-setup_ss_shortcut() {
-    echo -e "\n--- ${BLUE}正在设置 'ss' 快捷方式...${NC} ---"
-
-    # 获取当前脚本的绝对路径
-    CURRENT_SCRIPT_PATH=$(readlink -f "$0")
-
-    # 如果脚本不在目标位置，则移动它
-    if [ "$CURRENT_SCRIPT_PATH" != "$SCRIPT_TARGET_PATH" ]; then
-        echo -e "${YELLOW}脚本将从 '${CURRENT_SCRIPT_PATH}' 移动到 '${SCRIPT_TARGET_PATH}'...${NC}"
-        mv "$CURRENT_SCRIPT_PATH" "$SCRIPT_TARGET_PATH"
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}脚本移动失败！请手动将脚本移动到 '${SCRIPT_TARGET_PATH}' 并检查权限。${NC}"
-            return 1
-        fi
-        # 更新当前脚本路径变量
-        CURRENT_SCRIPT_PATH="$SCRIPT_TARGET_PATH"
-    else
-        echo -e "${GREEN}脚本已位于 '${SCRIPT_TARGET_PATH}'，无需移动。${NC}"
-    fi
-
-    # 检查当前脚本内容与目标路径内容是否一致，不一致则更新
-    LATEST_SCRIPT_CONTENT=$(cat "$0")
-    if ! diff -q <(cat "$SCRIPT_TARGET_PATH") <(echo "$LATEST_SCRIPT_CONTENT") >/dev/null 2>&1; then
-        echo -e "${YELLOW}检测到脚本已更新，正在更新脚本文件...${NC}"
-        cat "$0" > "$SCRIPT_TARGET_PATH"
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}脚本更新失败！请手动更新 '${SCRIPT_TARGET_PATH}'。${NC}"
-            return 1
-        fi
-        echo -e "${GREEN}脚本文件已更新。${NC}"
-    else
-        echo -e "${GREEN}脚本已是最新版本。${NC}"
-    fi
-
-
-    # 确保脚本有执行权限
-    echo -e "${YELLOW}正在确保脚本 '${SCRIPT_TARGET_PATH}' 具有执行权限...${NC}"
-    chmod +x "$SCRIPT_TARGET_PATH"
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}设置脚本执行权限失败！请手动设置：chmod +x '${SCRIPT_TARGET_PATH}'。${NC}"
-        return 1
-    fi
-
-    # 创建软链接
-    echo -e "${YELLOW}正在创建 'ss' 快捷方式 (软链接) 到 '${SS_COMMAND_LINK}'...${NC}"
-    ln -sf "$SCRIPT_TARGET_PATH" "$SS_COMMAND_LINK"
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}创建软链接失败！请手动创建：ln -sf '${SCRIPT_TARGET_PATH}' '${SS_COMMAND_LINK}'。${NC}"
-        return 1
-    fi
-
-    echo -e "${GREEN}'ss' 快捷方式已成功设置！${NC}"
-    echo -e "现在，您可以在任何地方直接输入 '${YELLOW}sudo ss${NC}' 来运行此脚本了。"
-    echo -e "如果 '${YELLOW}ss${NC}' 命令立即不生效，请尝试重新登录终端或运行 '${BLUE}source ~/.bashrc${NC}'。"
-    echo -e "------------------------------"
-}
-
 # --- 主菜单 ---
 
 main_menu() {
@@ -593,17 +529,5 @@ main_menu() {
 # 确保安装jq
 install_jq
 
-# 在第一次运行时，尝试设置快捷方式
-# 注意：如果脚本当前在非目标路径（如 /root），第一次运行它会将其移动并设置快捷方式
-# 之后再次运行将直接使用快捷方式，并直接进入菜单
-if [ "$0" == "$SCRIPT_TARGET_PATH" ] || [ "$(readlink -f "$0")" == "$SCRIPT_TARGET_PATH" ]; then
-    # 如果脚本已经位于目标路径，或者通过软链接运行，则直接进入菜单
-    main_menu
-else
-    # 否则，在第一次运行时设置快捷方式，然后进入菜单
-    echo -e "${YELLOW}检测到脚本首次运行或位置不符，将自动设置快捷方式...${NC}"
-    setup_ss_shortcut
-    echo -e "\n${BLUE}快捷方式设置完成，现在请使用 'sudo ss' 命令重新运行脚本进入主菜单。${NC}"
-    echo -e "${BLUE}当前脚本即将退出...${NC}"
-    exit 0 # 第一次运行时，设置完快捷方式后退出，让用户用新的命令运行
-fi
+# 直接进入主菜单，不再进行脚本移动和快捷方式设置
+main_menu
