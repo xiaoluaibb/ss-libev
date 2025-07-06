@@ -62,23 +62,16 @@ generate_ss_link() {
     local method=$3
     local password=$4
 
-    # 清理可能存在的颜色码
-    server_addr=$(echo "$server_addr" | sed 's/\x1b\[[0-9;]*m//g')
-    server_port=$(echo "$server_port" | sed 's/\x1b\[[0-9;]*m//g')
-    method=$(echo "$method" | sed 's/\x1b\[[0-9;]*m//g')
-    password=$(echo "$password" | sed 's/\x1b\[[0-9;]*m//g')
-
     # 处理 server_addr 可能是数组的情况，转换为第一个或统一的字符串
-    if [[ "$server_addr" == *","* || "$server_addr" == *" "* ]]; then
-        # 如果是逗号分隔或有空格（多IP），取第一个或统一表示为 0.0.0.0
-        server_addr_encoded="0.0.0.0" # 或者您希望的某个默认表示
-    else
-        server_addr_encoded="$server_addr"
+    # 这里的 server_addr 已经是纯字符串（来自jq的join或直接值）
+    local server_addr_encoded="$server_addr"
+    if [[ "$server_addr_encoded" == *" "* || "$server_addr_encoded" == *","* ]]; then
+        # 如果是多IP列表，通常SS链接只使用一个IP，或者您可以选择一个默认
+        # 这里为了简化，如果检测到是列表，统一用 "0.0.0.0" 表示
+        server_addr_encoded="0.0.0.0"
     fi
 
     # 对密码和方法进行Base64编码
-    # 注意：shadowsocks链接格式中，密码和方法是 base64(method:password)
-    # 并且URI fragment（#之后的部分）是可选的用户备注
     local credentials_raw="${method}:${password}"
     local credentials_base64=$(echo -n "$credentials_raw" | base64 -w 0) # -w 0 防止换行
 
@@ -108,7 +101,9 @@ configure_ss_node() {
     echo -e "${YELLOW}(可以直接回车接受推荐的默认值)${NC}"
 
     # 询问监听地址
-    read -p "请输入 Shadowsocks 监听地址 (默认: ${BLUE}$SS_SERVER_ADDR_DEFAULT${NC}): " SS_SERVER_ADDR_INPUT
+    echo -n "请输入 Shadowsocks 监听地址 (默认: "
+    echo -e "${BLUE}${SS_SERVER_ADDR_DEFAULT}${NC}): "
+    read SS_SERVER_ADDR_INPUT
     if [ -z "$SS_SERVER_ADDR_INPUT" ]; then
         SS_SERVER_ADDR="$SS_SERVER_ADDR_DEFAULT"
         echo -e "${GREEN}使用默认监听地址: ${SS_SERVER_ADDR}${NC}"
@@ -117,7 +112,9 @@ configure_ss_node() {
     fi
 
     # 询问代理端口
-    read -p "请输入 Shadowsocks 代理端口 (默认: ${BLUE}$SS_SERVER_PORT_DEFAULT${NC}): " SS_SERVER_PORT_INPUT
+    echo -n "请输入 Shadowsocks 代理端口 (默认: "
+    echo -e "${BLUE}${SS_SERVER_PORT_DEFAULT}${NC}): "
+    read SS_SERVER_PORT_INPUT
     if [ -z "$SS_SERVER_PORT_INPUT" ]; then
         SS_SERVER_PORT="$SS_SERVER_PORT_DEFAULT"
         echo -e "${GREEN}使用默认代理端口: ${SS_SERVER_PORT}${NC}"
@@ -126,7 +123,9 @@ configure_ss_node() {
     fi
     while ! [[ "$SS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$SS_SERVER_PORT" -lt 1 ] || [ "$SS_SERVER_PORT" -gt 65535 ]; do
         echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
-        read -p "请输入 Shadowsocks 代理端口 (默认: ${BLUE}$SS_SERVER_PORT_DEFAULT${NC}): " SS_SERVER_PORT_INPUT
+        echo -n "请输入 Shadowsocks 代理端口 (默认: "
+        echo -e "${BLUE}${SS_SERVER_PORT_DEFAULT}${NC}): "
+        read SS_SERVER_PORT_INPUT
         if [ -z "$SS_SERVER_PORT_INPUT" ]; then
             SS_SERVER_PORT="$SS_SERVER_PORT_DEFAULT"
             echo -e "${GREEN}使用默认代理端口: ${SS_SERVER_PORT}${NC}"
@@ -136,7 +135,9 @@ configure_ss_node() {
     done
 
     # 询问密码 (显示输入)
-    read -p "请输入 Shadowsocks 连接密码 (默认: ${BLUE}$SS_PASSWORD_DEFAULT${NC}): " SS_PASSWORD_INPUT
+    echo -n "请输入 Shadowsocks 连接密码 (默认: "
+    echo -e "${BLUE}${SS_PASSWORD_DEFAULT}${NC}): "
+    read SS_PASSWORD_INPUT
     if [ -z "$SS_PASSWORD_INPUT" ]; then
         SS_PASSWORD="$SS_PASSWORD_DEFAULT"
         echo -e "${GREEN}使用默认密码: ${SS_PASSWORD}${NC}"
@@ -151,7 +152,9 @@ configure_ss_node() {
     echo "  aes-128-gcm"
     echo -e "  ${GREEN}chacha20-ietf-poly1305 (推荐)${NC}"
     echo "  xchacha20-ietf-poly1305"
-    read -p "请输入 Shadowsocks 加密方式 (默认: ${BLUE}$SS_METHOD_DEFAULT${NC}): " SS_METHOD_INPUT
+    echo -n "请输入 Shadowsocks 加密方式 (默认: "
+    echo -e "${BLUE}${SS_METHOD_DEFAULT}${NC}): "
+    read SS_METHOD_INPUT
     if [ -z "$SS_METHOD_INPUT" ]; then
         SS_METHOD="$SS_METHOD_DEFAULT"
         echo -e "${GREEN}使用默认加密方式: ${SS_METHOD}${NC}"
@@ -160,7 +163,9 @@ configure_ss_node() {
     fi
 
     # 询问超时时间
-    read -p "请输入 Shadowsocks 超时时间 (秒, 默认: ${BLUE}$SS_TIMEOUT_DEFAULT${NC}): " SS_TIMEOUT_INPUT
+    echo -n "请输入 Shadowsocks 超时时间 (秒, 默认: "
+    echo -e "${BLUE}${SS_TIMEOUT_DEFAULT}${NC}): "
+    read SS_TIMEOUT_INPUT
     if [ -z "$SS_TIMEOUT_INPUT" ]; then
         SS_TIMEOUT="$SS_TIMEOUT_DEFAULT"
         echo -e "${GREEN}使用默认超时时间: ${SS_TIMEOUT}${NC}"
@@ -169,7 +174,9 @@ configure_ss_node() {
     fi
     while ! [[ "$SS_TIMEOUT" =~ ^[0-9]+$ ]] || [ "$SS_TIMEOUT" -lt 1 ]; do
         echo -e "${RED}超时时间无效，请输入一个大于0的整数。${NC}"
-        read -p "请输入 Shadowsocks 超时时间 (秒, 默认: ${BLUE}$SS_TIMEOUT_DEFAULT${NC}): " SS_TIMEOUT_INPUT
+        echo -n "请输入 Shadowsocks 超时时间 (秒, 默认: "
+        echo -e "${BLUE}${SS_TIMEOUT_DEFAULT}${NC}): "
+        read SS_TIMEOUT_INPUT
         if [ -z "$SS_TIMEOUT_INPUT" ]; then
             SS_TIMEOUT="$SS_TIMEOUT_DEFAULT"
             echo -e "${GREEN}使用默认超时时间: ${SS_TIMEOUT}${NC}"
@@ -243,7 +250,12 @@ uninstall_ss() {
         apt purge -y shadowsocks-libev > /dev/null 2>&1
         echo -e "${YELLOW}正在删除所有配置文件...${NC}"
         rm -rf "$SS_CONFIG_DIR" # 删除整个配置目录
-        echo -e "${GREEN}Shadowsocks-libev 及所有节点已成功卸载。${NC}"
+
+        echo -e "${YELLOW}正在删除脚本文件及快捷方式...${NC}"
+        rm -f "$SCRIPT_TARGET_PATH" # 删除脚本本身
+        rm -f "$SS_COMMAND_LINK"   # 删除快捷方式
+
+        echo -e "${GREEN}Shadowsocks-libev、所有节点及脚本已成功卸载。${NC}"
     else
         echo -e "${BLUE}卸载操作已取消。${NC}"
     fi
@@ -355,7 +367,7 @@ view_current_config() {
 
     local config_files=$(find "$SS_CONFIG_DIR" -maxdepth 1 -name "*.json" -print 2>/dev/null)
     if [ -z "$config_files" ]; then
-        echo -e "${RED}未检测到 Shadowsocks-libev 配置文件。请先运行 '安装 Shadowsocks-libev' 进行配置。${NC}"
+        echo -e "${RED}未检测到 Shadowsocks-libev 配置文件。请先运行 '安装/重新配置默认节点' 进行配置。${NC}"
         return
     fi
 
@@ -394,10 +406,12 @@ add_new_ss_node() {
     install_jq # 确保 jq 已安装
     if [ $? -ne 0 ]; then return; fi
 
-    read -p "请输入新节点的端口号 (例如 8389): " NEW_PORT
+    echo -n "请输入新节点的端口号 (例如 8389): "
+    read NEW_PORT
     while ! [[ "$NEW_PORT" =~ ^[0-9]+$ ]] || [ "$NEW_PORT" -lt 1 ] || [ "$NEW_PORT" -gt 65535 ]; do
         echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
-        read -p "请重新输入新节点的端口号: " NEW_PORT
+        echo -n "请重新输入新节点的端口号: "
+        read NEW_PORT
     done
 
     # 检查端口是否已被现有节点使用
@@ -471,12 +485,12 @@ setup_ss_shortcut() {
 main_menu() {
     clear
     echo -e "--- ${GREEN}Shadowsocks-libev 管理脚本${NC} ---"
-    echo -e "${BLUE}1.${NC} ${YELLOW}安装/重新配置节点 ${NC}" # 变为重新配置
+    echo -e "${BLUE}1.${NC} ${YELLOW}安装/重新配置默认节点 (端口: 12306 等)${NC}" # 变为重新配置
     echo -e "${BLUE}2.${NC} ${YELLOW}新增 Shadowsocks 节点${NC}" # 新增功能
     echo -e "${BLUE}3.${NC} ${RED}卸载 Shadowsocks-libev 及所有节点${NC}"
     echo -e "${BLUE}4.${NC} ${GREEN}查看所有 Shadowsocks 节点运行状态${NC}"
-    echo -e "${BLUE}5.${NC} ${YELLOW}停止 Shadowsocks 服务${NC}"
-    echo -e "${BLUE}6.${NC} ${YELLOW}重启 Shadowsocks 服务${NC}"
+    echo -e "${BLUE}5.${NC} ${YELLOW}停止 Shadowsocks 服务实例${NC}"
+    echo -e "${BLUE}6.${NC} ${YELLOW}重启 Shadowsocks 服务实例${NC}"
     echo -e "${BLUE}7.${NC} ${GREEN}查看所有 Shadowsocks 节点当前配置及 SS 链接${NC}" # 增强功能
     echo -e "${BLUE}0.${NC} ${YELLOW}退出${NC}"
     echo -e "------------------------------------"
