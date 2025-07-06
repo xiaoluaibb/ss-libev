@@ -437,8 +437,7 @@ view_current_config() {
 # 新增 SS 节点
 add_new_ss_node() {
     echo -e "\n--- ${BLUE}新增 Shadowsocks 节点${NC} ---"
-    install_ss_libev # 确保 shadowsocks-libev 已安装
-    if [ $? -ne 0 ]; then return; fi
+    # 这里的 install_ss_libev() 保持不变，因为它是特定功能的依赖检查
     install_jq # 确保 jq 已安装
     if [ $? -ne 0 ]; then return; fi
 
@@ -491,7 +490,8 @@ main_menu() {
     case "$choice" in
         1)
             # 默认主实例配置文件路径和名称
-            configure_ss_node "${SS_CONFIG_DIR}/config.json" "shadowsocks-libev.service"
+            # 假设默认端口是12306。如果你的默认端口不是，请更改这里的端口号。
+            configure_ss_node "${SS_CONFIG_DIR}/config.json" "shadowsocks-libev@12306.service"
             ;;
         2)
             add_new_ss_node
@@ -526,8 +526,9 @@ main_menu() {
 
 # --- 脚本启动逻辑 ---
 
-# 确保安装jq
-install_jq
+# 确保安装 jq 和 shadowsocks-libev
+install_jq || exit 1 # 如果jq安装失败，则退出脚本
+install_ss_libev || exit 1 # 如果shadowsocks-libev安装失败，则退出脚本
 
-# 直接进入主菜单，不再进行脚本移动和快捷方式设置
+# 直接进入主菜单
 main_menu
