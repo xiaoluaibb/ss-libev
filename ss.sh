@@ -51,50 +51,41 @@ install_ss_libev() {
         echo -e "${GREEN}shadowsocks-libev 安装完成。${NC}"
     else
         echo -e "${GREEN}'shadowsocks-libev' 已安装。${NC}"
-    fi
+    }
     return 0
 }
 
-# 获取公网 IP 地址
-get_public_ip() {
-    echo -e "${YELLOW}正在尝试获取服务器公网 IP 地址...${NC}"
-    local public_ip=""
-    # 尝试从多个源获取 IPv4 地址
-    public_ip=$(curl -s4 "https://icanhazip.com" || curl -s4 "https://ident.me" || curl -s4 "http://ip.sb")
-    
-    if [ -n "$public_ip" ]; then
-        echo -e "${GREEN}成功获取到公网 IP: ${public_ip}${NC}"
-        echo "$public_ip"
-    else
-        echo -e "${RED}未能获取到公网 IP 地址。请检查网络连接或手动指定 IP。${NC}"
-        return 1
-    fi
+# 获取公网 IPv4 地址 (无输出，直接返回IP)
+get_public_ipv4() {
+    local public_ipv4=""
+    # 尝试从多个源获取 IPv4 地址，静默执行
+    public_ipv4=$(curl -s4 "https://icanhazip.com" || curl -s4 "https://ident.me" || curl -s4 "http://ip.sb")
+    echo "$public_ipv4" # 直接返回结果
+}
+
+# 获取公网 IPv6 地址 (无输出，直接返回IP)
+get_public_ipv6() {
+    local public_ipv6=""
+    # 尝试从多个源获取 IPv6 地址，静默执行
+    public_ipv6=$(curl -s6 "https://icanhazip.com" || curl -s6 "https://ident.me" || curl -s6 "http://ip.sb")
+    echo "$public_ipv6" # 直接返回结果
 }
 
 
 # 生成 SS 链接函数 (将参数编码为 base64)
+# 参数：server_ip, server_port, method, password
 generate_ss_link() {
-    local server_addr_display=$1 # 这个参数现在将是实际服务器IP
+    local server_ip=$1
     local server_port=$2
     local method=$3
     local password=$4
-
-    local server_addr_for_link=""
-    local public_ip=$(get_public_ip) # 获取公网 IP
-    
-    if [ -z "$public_ip" ]; then
-        echo -e "${RED}警告：未能获取到公网 IP，SS 链接将使用 '0.0.0.0'。请手动替换。${NC}"
-        server_addr_for_link="0.0.0.0"
-    else
-        server_addr_for_link="$public_ip"
-    fi
 
     # 对密码和方法进行Base64编码
     local credentials_raw="${method}:${password}"
     local credentials_base64=$(echo -n "$credentials_raw" | base64 -w 0) # -w 0 防止换行
 
     # 构建 ss:// 链接
-    echo "ss://${credentials_base64}@${server_addr_for_link}:${server_port}#Shadowsocks_Node"
+    echo "ss://${credentials_base64}@${server_ip}:${server_port}#Shadowsocks_Node"
 }
 
 # 配置 Shadowsocks 节点
@@ -123,6 +114,7 @@ configure_ss_node() {
 
     local SS_SERVER_ADDR_CONFIG="" # 实际写入配置文件的地址
     local SS_SERVER_ADDR_DISPLAY="" # 用于显示在提示中的地址
+    local IS_IPV6_ENABLED="false" # 标记是否启用了IPv6监听
 
     # 询问监听地址类型
     echo -e "\n${YELLOW}请选择 Shadowsocks 监听地址类型：${NC}"
@@ -134,11 +126,13 @@ configure_ss_node() {
         2)
             SS_SERVER_ADDR_CONFIG="$DEFAULT_SS_SERVER_ADDR_IPV4_IPV6"
             SS_SERVER_ADDR_DISPLAY="::1, 0.0.0.0" # 用于显示
+            IS_IPV6_ENABLED="true"
             echo -e "${GREEN}选择监听 IPv4 和 IPv6 地址。${NC}"
             ;;
         *) # 默认或无效输入都视为选择 1
             SS_SERVER_ADDR_CONFIG="\"$DEFAULT_SS_SERVER_ADDR_IPV4\"" # 单个IP需要加引号
             SS_SERVER_ADDR_DISPLAY="$DEFAULT_SS_SERVER_ADDR_IPV4" # 用于显示
+            IS_IPV6_ENABLED="false"
             echo -e "${GREEN}选择仅监听 IPv4 地址。${NC}"
             ;;
     esac
@@ -281,8 +275,29 @@ EOF
       
       # 生成并显示 SS 链接
       echo -e "\n${GREEN}请复制以下 SS 链接到您的代理软件：${NC}"
-      NODE_LINK=$(generate_ss_link "$SS_SERVER_ADDR_DISPLAY" "$SS_SERVER_PORT" "$SS_METHOD" "$SS_PASSWORD")
-      echo -e "${YELLOW}${NODE_LINK}${NC}"
+      
+      # 获取并生成 IPv4 SS 链接
+      local public_ipv4=$(get_public_ipv4)
+      if [ -n "$public_ipv4" ]; then
+          echo -e "${BLUE}IPv4 SS 链接:${NC}"
+          NODE_LINK_IPV4=$(generate_ss_link "$public_ipv4" "$SS_SERVER_PORT" "$SS_METHOD" "$SS_PASSWORD")
+          echo -e "${YELLOW}${NODE_LINK_IPV4}${NC}"
+      else
+          echo -e "${RED}警告：未能获取到公网 IPv4 地址，无法生成 IPv4 SS 链接。${NC}"
+      fi
+
+      # 如果启用了 IPv6 监听，则尝试获取并生成 IPv6 SS 链接
+      if [ "$IS_IPV6_ENABLED" = "true" ]; then
+          local public_ipv6=$(get_public_ipv6)
+          if [ -n "$public_ipv6" ]; then
+              echo -e "${BLUE}IPv6 SS 链接:${NC}"
+              NODE_LINK_IPV6=$(generate_ss_link "[$public_ipv6]" "$SS_SERVER_PORT" "$SS_METHOD" "$SS_PASSWORD") # IPv6 地址需要用方括号括起来
+              echo -e "${YELLOW}${NODE_LINK_IPV6}${NC}"
+          else
+              echo -e "${YELLOW}提示：服务器未检测到公网 IPv6 地址，无法生成 IPv6 SS 链接。${NC}"
+          fi
+      fi
+
       echo -e "${BLUE}(提示：SS 链接中的 IP 地址已自动尝试获取您的公网 IP)${NC}"
 
     else
@@ -379,7 +394,7 @@ stop_service() {
             services_to_manage+=("$service_name")
             echo -e "  ${BLUE}${i}.${NC} ${service_name}"
             i=$((i+1))
-            has_services=true
+        has_services=true
         fi
     done
 
@@ -470,16 +485,20 @@ view_current_config() {
         return
     fi
 
-    local public_ip=$(get_public_ip) # 提前获取公网IP
-
     for cfg in $config_files; do
         echo -e "\n${YELLOW}--- 配置文件: ${BLUE}$cfg${NC} ---"
         if [ -f "$cfg" ]; then
             local server_addr_raw=$(jq '.server' "$cfg" 2>/dev/null) # 获取原始JSON格式的server字段
             local server_addr_display=""
+            local IS_IPV6_ENABLED_IN_CONFIG="false"
+
             # 判断是字符串还是数组
             if echo "$server_addr_raw" | grep -q '\[.*\]'; then # 如果是数组
                 server_addr_display=$(echo "$server_addr_raw" | jq -r 'join(", ")' 2>/dev/null)
+                # 检查是否包含IPv6监听地址 (::1)
+                if echo "$server_addr_raw" | grep -q '"::1"'; then
+                    IS_IPV6_ENABLED_IN_CONFIG="true"
+                fi
             else # 如果是字符串
                 server_addr_display=$(echo "$server_addr_raw" | jq -r '.' 2>/dev/null)
             fi
@@ -495,11 +514,29 @@ view_current_config() {
             echo -e "  ${BLUE}超时时间: ${GREEN}$timeout${NC} 秒"
             echo -e "  ${BLUE}连接密码: ${GREEN}(已设置，此处不显示)${NC}"
 
-            echo -e "\n${GREEN}对应的 SS 链接 (可复制)：${NC}"
-            # 这里调用 generate_ss_link 时，传递获取到的公网IP，而不是配置文件中的监听地址
-            NODE_LINK=$(generate_ss_link "$public_ip" "$server_port" "$method" "$password")
-            echo -e "${YELLOW}${NODE_LINK}${NC}"
-            echo -e "${BLUE}(提示：SS 链接中的 IP 地址已自动尝试获取您的公网 IP)${NC}"
+            echo -e "\n${GREEN}请复制以下 SS 链接到您的代理软件：${NC}"
+            
+            # 获取并生成 IPv4 SS 链接
+            local public_ipv4=$(get_public_ipv4)
+            if [ -n "$public_ipv4" ]; then
+                echo -e "${BLUE}IPv4 SS 链接:${NC}"
+                NODE_LINK_IPV4=$(generate_ss_link "$public_ipv4" "$server_port" "$method" "$password")
+                echo -e "${YELLOW}${NODE_LINK_IPV4}${NC}"
+            else
+                echo -e "${RED}警告：未能获取到公网 IPv4 地址，无法生成 IPv4 SS 链接。${NC}"
+            fi
+
+            # 如果配置文件启用了 IPv6 监听，则尝试获取并生成 IPv6 SS 链接
+            if [ "$IS_IPV6_ENABLED_IN_CONFIG" = "true" ]; then
+                local public_ipv6=$(get_public_ipv6)
+                if [ -n "$public_ipv6" ]; then
+                    echo -e "${BLUE}IPv6 SS 链接:${NC}"
+                    NODE_LINK_IPV6=$(generate_ss_link "[$public_ipv6]" "$server_port" "$method" "$SS_PASSWORD") # IPv6 地址需要用方括号括起来
+                    echo -e "${YELLOW}${NODE_LINK_IPV6}${NC}"
+                else
+                    echo -e "${YELLOW}提示：服务器未检测到公网 IPv6 地址，无法生成 IPv6 SS 链接。${NC}"
+                fi
+            fi
 
         else
             echo -e "${RED}文件不存在或无法读取。${NC}"
