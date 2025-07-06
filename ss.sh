@@ -48,7 +48,7 @@ install_ss_libev() {
         fi
         echo -e "${GREEN}shadowsocks-libev 安装完成。${NC}"
     else
-        echo -e "${GREEN}shadowsocks-libev 已安装。${NC}"
+        echo -e "${GREEN}'shadowsocks-libev' 已安装。${NC}"
     fi
     return 0
 }
@@ -65,8 +65,7 @@ generate_ss_link() {
     if [[ "$server_addr_display" == "0.0.0.0" ]]; then
         server_addr_for_link="0.0.0.0"
     elif [[ "$server_addr_display" == *","* ]]; then
-        # 如果是多IP列表，取第一个IP作为链接地址，或者统一用 0.0.0.0
-        # 这里为了简化，如果检测到是列表，统一用 "0.0.0.0" 表示
+        # 如果是多IP列表，取第一个IP作为链接地址，或者统一用 "0.0.0.0" 表示
         server_addr_for_link="0.0.0.0" 
     else
         server_addr_for_link="$server_addr_display"
@@ -83,9 +82,9 @@ generate_ss_link() {
 # 配置 Shadowsocks 节点
 configure_ss_node() {
     local config_file_path=$1
-    local instance_name=$2 # 例如 ss-libev 或 ss-libev@port_number
+    local instance_base_name="shadowsocks-libev" # Systemd 服务基础名称
 
-    echo -e "\n--- ${BLUE}配置 Shadowsocks 节点: ${instance_name}${NC} ---"
+    echo -e "\n--- ${BLUE}配置 Shadowsocks 节点${NC} ---"
 
     # 在尝试创建配置文件之前，先确保目录存在
     mkdir -p "$SS_CONFIG_DIR"
@@ -97,15 +96,10 @@ configure_ss_node() {
     # 硬编码默认参数
     local DEFAULT_SS_SERVER_ADDR_IPV4="0.0.0.0"
     local DEFAULT_SS_SERVER_ADDR_IPV4_IPV6='["::1", "0.0.0.0"]' # JSON 数组字符串
-    local DEFAULT_SS_SERVER_PORT="12306"
+    local DEFAULT_SS_SERVER_PORT="12306" # 默认端口
     local DEFAULT_SS_PASSWORD="your_strong_password"
     local DEFAULT_SS_METHOD="aes-256-gcm" # 默认加密方式
     local DEFAULT_SS_TIMEOUT="300"
-
-    # 如果是新增节点，默认端口从实例名中提取
-    if [[ "$instance_name" == *"@"* ]]; then
-        DEFAULT_SS_SERVER_PORT=$(echo "$instance_name" | cut -d'@' -f2 | sed 's/[^0-9]//g' || echo "12306")
-    fi
 
     echo -e "${YELLOW}请根据提示输入 Shadowsocks 节点的配置参数：${NC}"
     echo -e "${YELLOW}(可以直接回车接受推荐的默认值)${NC}"
@@ -235,14 +229,18 @@ EOF
     fi
 
     echo -e "${GREEN}配置文件已生成。${NC}"
-    echo -e "\n${YELLOW}正在设置 Shadowsocks-libev 服务 (${instance_name}) 开机启动并重启...${NC}"
+    
+    # 确定服务实例名称
+    local service_instance="${instance_base_name}@${SS_SERVER_PORT}.service"
+    
+    echo -e "\n${YELLOW}正在设置 Shadowsocks-libev 服务 (${service_instance}) 开机启动并重启...${NC}"
 
     # 启动/启用服务
-    systemctl enable "${instance_name}" > /dev/null 2>&1
-    systemctl restart "${instance_name}"
+    systemctl enable "${service_instance}" > /dev/null 2>&1
+    systemctl restart "${service_instance}"
 
     if [ $? -eq 0 ]; then
-      echo -e "${GREEN}Shadowsocks-libev 服务 (${instance_name}) 已成功重启并设置开机启动！${NC}"
+      echo -e "${GREEN}Shadowsocks-libev 服务 (${service_instance}) 已成功重启并设置开机启动！${NC}"
       echo -e "${BLUE}配置详情：${NC}"
       echo -e "  ${BLUE}监听地址: ${GREEN}$SS_SERVER_ADDR_DISPLAY${NC}" # 显示时使用易读的格式
       echo -e "  ${BLUE}代理端口: ${GREEN}$SS_SERVER_PORT${NC}"
@@ -256,11 +254,11 @@ EOF
       echo -e "${BLUE}(提示：如果监听地址是0.0.0.0或包含多个地址，请替换为您的服务器公网IP)${NC}"
 
     else
-      echo -e "${RED}Shadowsocks-libev 服务 (${instance_name}) 重启失败，请检查日志 (journalctl -u ${instance_name}.service) 获取更多信息。${NC}"
+      echo -e "${RED}Shadowsocks-libev 服务 (${service_instance}) 重启失败，请检查日志 (journalctl -u ${service_instance}) 获取更多信息。${NC}"
     fi
 
     echo -e "\n--- ${GREEN}配置完成${NC} ---"
-    echo -e "您可以运行 'systemctl status ${instance_name}' 来检查服务状态。"
+    echo -e "您可以运行 'systemctl status ${service_instance}' 来检查服务状态。"
 }
 
 # 卸载 Shadowsocks-libev
@@ -269,12 +267,19 @@ uninstall_ss() {
     read -p "您确定要卸载 Shadowsocks-libev 及所有节点吗？(y/N): " confirm
     if [[ "$confirm" =~ ^[yY]$ ]]; then
         echo -e "${YELLOW}正在停止并禁用所有 Shadowsocks-libev 服务实例...${NC}"
-        # 查找所有 ss-libev 服务实例
-        systemctl list-units --type=service --state=active | grep "shadowsocks-libev" | awk '{print $1}' | while read -r service_name; do
+        # 查找所有 ss-libev 服务实例，包括带端口的实例
+        systemctl list-units --type=service --all | grep "shadowsocks-libev@" | awk '{print $1}' | while read -r service_name; do
             echo -e "${YELLOW}停止并禁用: ${service_name}${NC}"
             systemctl stop "$service_name" > /dev/null 2>&1
             systemctl disable "$service_name" > /dev/null 2>&1
         done
+        # 尝试停止并禁用可能的默认非模板服务（以防万一）
+        if systemctl list-units --type=service --all | grep -q "shadowsocks-libev.service"; then
+            echo -e "${YELLOW}停止并禁用: shadowsocks-libev.service${NC}"
+            systemctl stop shadowsocks-libev.service > /dev/null 2>&1
+            systemctl disable shadowsocks-libev.service > /dev/null 2>&1
+        fi
+
 
         echo -e "${YELLOW}正在卸载 shadowsocks-libev 软件包...${NC}"
         apt purge -y shadowsocks-libev > /dev/null 2>&1
@@ -293,11 +298,20 @@ uninstall_ss() {
 check_status() {
     echo -e "\n--- ${BLUE}Shadowsocks-libev 运行状态${NC} ---"
     # 列出所有 shadowsocks-libev 服务实例的状态
-    systemctl list-units --type=service | grep "shadowsocks-libev" | awk '{print $1}' | while read -r service_name; do
+    local found_services=false
+    systemctl list-units --type=service --all | grep "shadowsocks-libev@" | awk '{print $1}' | while read -r service_name; do
         echo -e "\n${BLUE}服务: ${service_name}${NC}"
         systemctl status "$service_name" --no-pager
+        found_services=true
     done
-    if ! systemctl list-units --type=service | grep -q "shadowsocks-libev"; then
+    # 检查是否有非模板的 shadowsocks-libev.service (以防万一)
+    if systemctl list-units --type=service --all | grep -q "shadowsocks-libev.service" && systemctl is-active shadowsocks-libev.service >/dev/null 2>&1; then
+        echo -e "\n${BLUE}服务: shadowsocks-libev.service${NC}"
+        systemctl status shadowsocks-libev.service --no-pager
+        found_services=true
+    fi
+
+    if [ "$found_services" = false ]; then
         echo -e "${YELLOW}未检测到 Shadowsocks-libev 服务实例。${NC}"
     fi
 }
@@ -306,25 +320,30 @@ check_status() {
 stop_service() {
     echo -e "\n--- ${BLUE}停止 Shadowsocks-libev 服务${NC} ---"
     local config_files=$(find "$SS_CONFIG_DIR" -maxdepth 1 -name "*.json" -print 2>/dev/null)
-    if [ -z "$config_files" ]; then
-        echo -e "${YELLOW}未检测到 Shadowsocks-libev 配置文件，没有可停止的服务实例。${NC}"
+    local has_services=false
+    
+    # 查找所有正在运行的ss-libev服务实例，并构建列表
+    local i=1
+    local services_to_manage=()
+    systemctl list-units --type=service --state=active | grep "shadowsocks-libev@" | awk '{print $1}' | while read -r service_name; do
+        services_to_manage+=("$service_name")
+        echo -e "  ${BLUE}${i}.${NC} ${service_name}"
+        i=$((i+1))
+        has_services=true
+    done
+    # 检查是否有非模板的 shadowsocks-libev.service (以防万一)
+    if systemctl list-units --type=service --state=active | grep -q "shadowsocks-libev.service"; then
+        services_to_manage+=("shadowsocks-libev.service")
+        echo -e "  ${BLUE}${i}.${NC} shadowsocks-libev.service"
+        i=$((i+1))
+        has_services=true
+    fi
+
+    if [ "$has_services" = false ]; then
+        echo -e "${YELLOW}未检测到正在运行的 Shadowsocks-libev 服务实例。${NC}"
         return
     fi
 
-    echo -e "${YELLOW}请选择要停止的服务实例：${NC}"
-    local i=1
-    local services=()
-    # 遍历已知的配置文件来列出服务实例
-    for cfg in $config_files; do
-        local port=$(jq -r '.server_port' "$cfg" 2>/dev/null)
-        local service_name="shadowsocks-libev@${port}.service"
-        if [ "$cfg" = "${SS_CONFIG_DIR}/config.json" ]; then # 默认主实例
-            service_name="shadowsocks-libev.service"
-        fi
-        services+=("$service_name")
-        echo -e "  ${BLUE}${i}.${NC} ${service_name}"
-        i=$((i+1))
-    done
     echo -e "  ${BLUE}0.${NC} 返回主菜单"
 
     read -p "请输入选择 (0-$((i-1))): " choice
@@ -332,7 +351,7 @@ stop_service() {
         echo -e "${BLUE}操作已取消。${NC}"
         return
     elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le $((i-1)) ]; then
-        local selected_service=${services[$((choice-1))]}
+        local selected_service=${services_to_manage[$((choice-1))]}
         systemctl stop "$selected_service"
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}服务 '${selected_service}' 已停止。${NC}"
@@ -348,24 +367,30 @@ stop_service() {
 restart_service() {
     echo -e "\n--- ${BLUE}重启 Shadowsocks-libev 服务${NC} ---"
     local config_files=$(find "$SS_CONFIG_DIR" -maxdepth 1 -name "*.json" -print 2>/dev/null)
-    if [ -z "$config_files" ]; then
-        echo -e "${YELLOW}未检测到 Shadowsocks-libev 配置文件，没有可重启的服务实例。${NC}"
+    local has_services=false
+
+    # 查找所有正在运行的ss-libev服务实例，并构建列表
+    local i=1
+    local services_to_manage=()
+    systemctl list-units --type=service --state=active | grep "shadowsocks-libev@" | awk '{print $1}' | while read -r service_name; do
+        services_to_manage+=("$service_name")
+        echo -e "  ${BLUE}${i}.${NC} ${service_name}"
+        i=$((i+1))
+        has_services=true
+    done
+    # 检查是否有非模板的 shadowsocks-libev.service (以防万一)
+    if systemctl list-units --type=service --state=active | grep -q "shadowsocks-libev.service"; then
+        services_to_manage+=("shadowsocks-libev.service")
+        echo -e "  ${BLUE}${i}.${NC} shadowsocks-libev.service"
+        i=$((i+1))
+        has_services=true
+    fi
+
+    if [ "$has_services" = false ]; then
+        echo -e "${YELLOW}未检测到正在运行的 Shadowsocks-libev 服务实例。${NC}"
         return
     fi
 
-    echo -e "${YELLOW}请选择要重启的服务实例：${NC}"
-    local i=1
-    local services=()
-    for cfg in $config_files; do
-        local port=$(jq -r '.server_port' "$cfg" 2>/dev/null)
-        local service_name="shadowsocks-libev@${port}.service"
-        if [ "$cfg" = "${SS_CONFIG_DIR}/config.json" ]; then # 默认主实例
-            service_name="shadowsocks-libev.service"
-        fi
-        services+=("$service_name")
-        echo -e "  ${BLUE}${i}.${NC} ${service_name}"
-        i=$((i+1))
-    done
     echo -e "  ${BLUE}0.${NC} 返回主菜单"
 
     read -p "请输入选择 (0-$((i-1))): " choice
@@ -373,7 +398,7 @@ restart_service() {
         echo -e "${BLUE}操作已取消。${NC}"
         return
     elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le $((i-1)) ]; then
-        local selected_service=${services[$((choice-1))]}
+        local selected_service=${services_to_manage[$((choice-1))]}
         systemctl restart "$selected_service"
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}服务 '${selected_service}' 已重启。${NC}"
@@ -437,7 +462,6 @@ view_current_config() {
 # 新增 SS 节点
 add_new_ss_node() {
     echo -e "\n--- ${BLUE}新增 Shadowsocks 节点${NC} ---"
-    # 这里的 install_ss_libev() 保持不变，因为它是特定功能的依赖检查
     install_jq # 确保 jq 已安装
     if [ $? -ne 0 ]; then return; fi
 
@@ -463,10 +487,8 @@ add_new_ss_node() {
     done
 
     local new_config_file="${SS_CONFIG_DIR}/config-${NEW_PORT}.json"
-    local new_service_instance="shadowsocks-libev@${NEW_PORT}.service"
-
-    echo -e "${YELLOW}即将为新节点配置端口 ${NEW_PORT}，配置文件将是 ${new_config_file}${NC}"
-    configure_ss_node "$new_config_file" "$new_service_instance"
+    # 这里不需要 instance_name，因为 configure_ss_node 内部会根据端口生成
+    configure_ss_node "$new_config_file"
 }
 
 
@@ -475,7 +497,7 @@ add_new_ss_node() {
 main_menu() {
     clear
     echo -e "--- ${GREEN}Shadowsocks-libev 管理脚本${NC} ---"
-    echo -e "${BLUE}1.${NC} ${YELLOW}安装/重新配置默认节点 (端口: 12306 等)${NC}"
+    echo -e "${BLUE}1.${NC} ${YELLOW}安装/重新配置默认节点 (端口: 12306)${NC}"
     echo -e "${BLUE}2.${NC} ${YELLOW}新增 Shadowsocks 节点${NC}"
     echo -e "${BLUE}3.${NC} ${RED}卸载 Shadowsocks-libev 及所有节点${NC}"
     echo -e "${BLUE}4.${NC} ${GREEN}查看所有 Shadowsocks 节点运行状态${NC}"
@@ -489,9 +511,8 @@ main_menu() {
 
     case "$choice" in
         1)
-            # 默认主实例配置文件路径和名称
-            # 假设默认端口是12306。如果你的默认端口不是，请更改这里的端口号。
-            configure_ss_node "${SS_CONFIG_DIR}/config.json" "shadowsocks-libev@12306.service"
+            # 默认主实例配置文件路径。configure_ss_node 会使用其内部的 DEFAULT_SS_SERVER_PORT
+            configure_ss_node "${SS_CONFIG_DIR}/config.json"
             ;;
         2)
             add_new_ss_node
