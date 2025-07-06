@@ -51,7 +51,7 @@ install_ss_libev() {
         echo -e "${GREEN}shadowsocks-libev 安装完成。${NC}"
     else
         echo -e "${GREEN}'shadowsocks-libev' 已安装。${NC}"
-    }
+    fi
     return 0
 }
 
@@ -144,7 +144,7 @@ configure_ss_node() {
         echo -e "${GREEN}使用默认代理端口: ${SS_SERVER_PORT}${NC}"
     else
         SS_SERVER_PORT="$SS_SERVER_PORT_INPUT"
-    fi
+    }
     while ! [[ "$SS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$SS_SERVER_PORT" -lt 1 ] || [ "$SS_SERVER_PORT" -gt 65535 ]; do
         echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
         read -p "请输入 Shadowsocks 代理端口 (默认: ${DEFAULT_SS_SERVER_PORT}): " SS_SERVER_PORT_INPUT
@@ -329,16 +329,28 @@ uninstall_ss() {
             systemctl disable "${DEFAULT_SS_SERVICE_NAME}" > /dev/null 2>&1
         fi
 
+        echo -e "${YELLOW}强制终止所有残留的 ss-server 进程...${NC}"
+        # 使用 pgrep 查找 ss-server 进程并终止
+        pkill -f "ss-server -c" > /dev/null 2>&1 || true
+
         echo -e "${YELLOW}正在卸载 shadowsocks-libev 软件包...${NC}"
         apt purge -y shadowsocks-libev > /dev/null 2>&1
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}警告：软件包卸载可能未完全成功，请手动检查。${NC}"
+        fi
+
         echo -e "${YELLOW}正在删除所有配置文件...${NC}"
         rm -rf "$SS_CONFIG_DIR" # 删除整个配置目录
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}警告：配置文件删除可能未完全成功，请手动检查。${NC}"
+        fi
 
         # 重新加载 Systemd 配置以清除已卸载的服务
+        echo -e "${YELLOW}重新加载 Systemd 配置并重置失败的服务状态...${NC}"
         systemctl daemon-reload
         systemctl reset-failed # 重置所有失败的服务单元状态
         
-        echo -e "${GREEN}Shadowsocks-libev、所有节点已成功卸载。${NC}"
+        echo -e "${GREEN}Shadowsocks-libev 及所有节点已成功卸载。${NC}"
         # 卸载完成后直接退出
         exit 0
     else
@@ -394,7 +406,7 @@ stop_service() {
             services_to_manage+=("$service_name")
             echo -e "  ${BLUE}${i}.${NC} ${service_name}"
             i=$((i+1))
-        has_services=true
+            has_services=true
         fi
     done
 
