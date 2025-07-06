@@ -471,12 +471,12 @@ setup_ss_shortcut() {
 main_menu() {
     clear
     echo -e "--- ${GREEN}Shadowsocks-libev 管理脚本${NC} ---"
-    echo -e "${BLUE}1.${NC} ${YELLOW}安装/重新配置默认节点 (端口: 12306 等)${NC}" # 变为重新配置
+    echo -e "${BLUE}1.${NC} ${YELLOW}安装/重新配置节点 ${NC}" # 变为重新配置
     echo -e "${BLUE}2.${NC} ${YELLOW}新增 Shadowsocks 节点${NC}" # 新增功能
     echo -e "${BLUE}3.${NC} ${RED}卸载 Shadowsocks-libev 及所有节点${NC}"
     echo -e "${BLUE}4.${NC} ${GREEN}查看所有 Shadowsocks 节点运行状态${NC}"
-    echo -e "${BLUE}5.${NC} ${YELLOW}停止 Shadowsocks 服务实例${NC}"
-    echo -e "${BLUE}6.${NC} ${YELLOW}重启 Shadowsocks 服务实例${NC}"
+    echo -e "${BLUE}5.${NC} ${YELLOW}停止 Shadowsocks 服务${NC}"
+    echo -e "${BLUE}6.${NC} ${YELLOW}重启 Shadowsocks 服务${NC}"
     echo -e "${BLUE}7.${NC} ${GREEN}查看所有 Shadowsocks 节点当前配置及 SS 链接${NC}" # 增强功能
     echo -e "${BLUE}0.${NC} ${YELLOW}退出${NC}"
     echo -e "------------------------------------"
