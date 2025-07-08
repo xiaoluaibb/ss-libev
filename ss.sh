@@ -202,7 +202,7 @@ configure_ss_node() {
             echo -e "${RED}输入无效，使用默认加密方法: ${DEFAULT_SS_METHOD}${NC}"
             SS_METHOD="$DEFAULT_SS_METHOD"
         fi
-    fi
+    done
 
     # 输入超时时间
     read -p "请输入 Shadowsocks 超时时间 (秒, 默认: ${DEFAULT_SS_TIMEOUT}): " SS_TIMEOUT_INPUT
@@ -544,7 +544,7 @@ view_current_config() {
     find "$SS_CONFIG_DIR" -maxdepth 1 -name "*.json" | while read -r config_file; do
         found_configs=true
         echo -e "\n${BLUE}配置文件: ${config_file}${NC}"
-        if ! command -v jq &> /dev/null; then
+        if ! command -v jq &> /D/ev/null; then
             echo -e "${RED}错误：未安装 'jq'，无法解析配置文件。请手动安装：sudo apt install jq${NC}"
             continue
         fi
