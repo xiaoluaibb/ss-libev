@@ -541,7 +541,7 @@ view_current_config() {
     if [ -z "$config_files" ]; then
         echo -e "${RED}未检测到 Shadowsocks-libev 配置文件。请先运行 '安装/重新配置默认节点' 进行配置。${NC}"
         return
-    fi # 修正：这里少了一个}，导致语法错误。已补上。
+    fi # <-- 修复：将 } 改为 fi
 
     for cfg in $config_files; do
         echo -e "\n${YELLOW}--- 配置文件: ${BLUE}$cfg${NC} ---"
