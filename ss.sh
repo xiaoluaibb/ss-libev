@@ -541,23 +541,21 @@ view_current_config() {
     if [ -z "$config_files" ]; then
         echo -e "${RED}未检测到 Shadowsocks-libev 配置文件。请先运行 '安装/重新配置默认节点' 进行配置。${NC}"
         return
-    fi # <-- 修复：将 } 改为 fi
+    fi 
 
     for cfg in $config_files; do
         echo -e "\n${YELLOW}--- 配置文件: ${BLUE}$cfg${NC} ---"
         if [ -f "$cfg" ]; then
-            local server_addr_raw=$(jq '.server' "$cfg" 2>/dev/null) # 获取原始JSON格式的server字段
+            local server_addr_raw=$(jq '.server' "$cfg" 2>/dev/null) 
             local server_addr_display=""
             local IS_IPV6_ENABLED_IN_CONFIG="false"
 
-            # 判断是字符串还是数组
-            if echo "$server_addr_raw" | grep -q '\[.*\]'; then # 如果是数组
+            if echo "$server_addr_raw" | grep -q '\[.*\]'; then
                 server_addr_display=$(echo "$server_addr_raw" | jq -r 'join(", ")' 2>/dev/null)
-                # 检查是否包含IPv6监听地址 (::0)
-                if echo "$server_addr_raw" | grep -q '"::0"'; then # 修改为检测 ::0
+                if echo "$server_addr_raw" | grep -q '"::0"'; then 
                     IS_IPV6_ENABLED_IN_CONFIG="true"
                 fi
-            else # 如果是字符串
+            else 
                 server_addr_display=$(echo "$server_addr_raw" | jq -r '.' 2>/dev/null)
             fi
 
@@ -565,18 +563,17 @@ view_current_config() {
             local password=$(jq -r '.password' "$cfg" 2>/dev/null)
             local method=$(jq -r '.method' "$cfg" 2>/dev/null)
             local timeout=$(jq -r '.timeout' "$cfg" 2>/dev/null)
-            local mode=$(jq -r '.mode' "$cfg" 2>/dev/null) # 获取mode
+            local mode=$(jq -r '.mode' "$cfg" 2>/dev/null) 
 
             echo -e "  ${BLUE}监听地址: ${GREEN}$server_addr_display${NC}"
             echo -e "  ${BLUE}代理端口: ${GREEN}$server_port${NC}"
             echo -e "  ${BLUE}加密方式: ${GREEN}$method${NC}"
             echo -e "  ${BLUE}超时时间: ${GREEN}$timeout${NC} 秒"
-            echo -e "  ${BLUE}模式: ${GREEN}$mode${NC}" # 显示mode
+            echo -e "  ${BLUE}模式: ${GREEN}$mode${NC}" 
             echo -e "  ${BLUE}连接密码: ${GREEN}(已设置，此处不显示)${NC}"
 
             echo -e "\n${GREEN}请复制以下 SS 链接到您的代理软件：${NC}"
             
-            # 获取并生成 IPv4 SS 链接
             local public_ipv4=$(get_public_ipv4)
             if [ -n "$public_ipv4" ]; then
                 echo -e "${BLUE}IPv4 SS 链接:${NC}"
@@ -586,12 +583,11 @@ view_current_config() {
                 echo -e "${RED}警告：未能获取到公网 IPv4 地址，无法生成 IPv4 SS 链接。${NC}"
             fi
 
-            # 如果配置文件启用了 IPv6 监听，则尝试获取并生成 IPv6 SS 链接
             if [ "$IS_IPV6_ENABLED_IN_CONFIG" = "true" ]; then
                 local public_ipv6=$(get_public_ipv6)
                 if [ -n "$public_ipv6" ]; then
                     echo -e "${BLUE}IPv6 SS 链接:${NC}"
-                    NODE_LINK_IPV6=$(generate_ss_link "[$public_ipv6]" "$server_port" "$method" "$password") # IPv6 地址需要用方括号括起来
+                    NODE_LINK_IPV6=$(generate_ss_link "[$public_ipv6]" "$server_port" "$method" "$password") 
                     echo -e "${YELLOW}${NODE_LINK_IPV6}${NC}"
                 else
                     echo -e "${YELLOW}提示：服务器未检测到公网 IPv6 地址，无法生成 IPv6 SS 链接。${NC}"
@@ -608,7 +604,7 @@ view_current_config() {
 # 新增 SS 节点
 add_new_ss_node() {
     echo -e "\n--- ${BLUE}新增 Shadowsocks 节点${NC} ---"
-    install_jq # 确保 jq 已安装
+    install_jq 
     if [ $? -ne 0 ]; then return; fi
 
     read -p "请输入新节点的端口号 (例如 8389): " NEW_PORT
@@ -617,7 +613,6 @@ add_new_ss_node() {
         read -p "请重新输入新节点的端口号: " NEW_PORT
     done
 
-    # 检查端口是否已被现有节点使用
     local existing_ports=()
     local config_files=$(find "$SS_CONFIG_DIR" -maxdepth 1 -name "*.json" -print 2>/dev/null)
     for cfg in $config_files; do
@@ -656,7 +651,6 @@ main_menu() {
 
     case "$choice" in
         1)
-            # 默认主实例配置文件路径
             configure_ss_node "${SS_CONFIG_DIR}/config.json"
             ;;
         2)
@@ -664,7 +658,7 @@ main_menu() {
             ;;
         3)
             uninstall_ss
-            ;; # 卸载函数内部已包含退出逻辑
+            ;; 
         4)
             check_status
             ;;
@@ -692,9 +686,7 @@ main_menu() {
 
 # --- 脚本启动逻辑 ---
 
-# 确保安装 jq 和 shadowsocks-libev
-install_jq || exit 1 # 如果jq安装失败，则退出脚本
-install_ss_libev || exit 1 # 如果shadowsocks-libev安装失败，则退出脚本
+install_jq || exit 1 
+install_ss_libev || exit 1 
 
-# 直接进入主菜单
 main_menu
