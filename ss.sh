@@ -88,6 +88,30 @@ generate_ss_link() {
     echo "ss://${credentials_base64}@${server_ip}:${server_port}#Shadowsocks_Node"
 }
 
+# 切换到单端口模式
+convert_to_single_port() {
+    local current_config_json=$(cat "$MAIN_CONFIG_FILE")
+    local port_count=$(echo "$current_config_json" | jq '.port_password | keys | length')
+
+    if [ "$port_count" -ne 1 ]; then
+        # This function should only be called if there's exactly one port
+        return 0
+    fi
+
+    echo -e "${YELLOW}检测到只剩一个端口，正在将配置转换为单端口模式...${NC}"
+    local single_port=$(echo "$current_config_json" | jq -r '.port_password | keys[]')
+    local single_password=$(echo "$current_config_json" | jq -r ".port_password[\"$single_port\"]")
+
+    local UPDATED_CONFIG=$(echo "$current_config_json" | jq \
+        --argjson port_num "$single_port" \
+        --arg password "$single_password" \
+        'del(.port_password) | .server_port = ($port_num | tonumber) | .password = $password' \
+    )
+    
+    echo "$UPDATED_CONFIG" > "$MAIN_CONFIG_FILE"
+    echo -e "${GREEN}配置已成功转换为单端口模式。${NC}"
+}
+
 # 配置 Shadowsocks 节点 (现在是添加/修改服务器配置到主 config.json)
 configure_ss_node_single() {
     local is_new_node=$1 # "true" for new node, "false" for reconfiguring default
@@ -319,7 +343,8 @@ configure_ss_node_single() {
     # --- 添加对 /etc/default/shadowsocks-libev 的更新 ---
     echo -e "${YELLOW}正在更新 Systemd 环境变量文件: /etc/default/shadowsocks-libev...${NC}"
     echo "CONFFILE=${MAIN_CONFIG_FILE}" > "/etc/default/shadowsocks-libev"
-    echo "DAEMON_ARGS=\"\"" >> "/etc/default/shadowsocks-libev" # 清空 DAEMON_ARGS，因为配置已在 config.json 中
+    # FIX: Explicitly add --fast-open to DAEMON_ARGS
+    echo "DAEMON_ARGS=\"--fast-open\"" >> "/etc/default/shadowsocks-libev"
     echo -e "${GREEN}Systemd 环境变量文件已更新。${NC}"
     # --- 更新结束 ---
 
@@ -382,6 +407,75 @@ configure_ss_node_single() {
     echo -e "\n--- ${GREEN}配置完成${NC} ---"
     echo -e "您可以运行 'systemctl status ${DEFAULT_SS_SERVICE_NAME}' 来检查服务状态。"
 }
+
+# 删除 Shadowsocks 端口代理
+delete_ss_port() {
+    echo -e "\n--- ${BLUE}删除 Shadowsocks 端口代理${NC} ---"
+    install_jq # 确保 jq 已安装
+    if [ $? -ne 0 ]; then return; fi
+
+    if [ ! -f "$MAIN_CONFIG_FILE" ]; then
+        echo -e "${RED}错误：主配置文件 ${MAIN_CONFIG_FILE} 不存在。请先配置节点。${NC}"
+        return 1
+    fi
+
+    local current_config=$(cat "$MAIN_CONFIG_FILE")
+    local port_passwords_obj=$(echo "$current_config" | jq '.port_password // {}')
+    local ports=$(echo "$port_passwords_obj" | jq -r 'keys[]')
+    local port_count=$(echo "$ports" | wc -w)
+
+    if [ "$port_count" -eq 0 ]; then
+        echo -e "${YELLOW}当前配置文件中没有配置任何端口代理。${NC}"
+        return 0
+    fi
+
+    echo -e "${BLUE}当前已配置的端口：${NC}"
+    echo "$ports" | nl -ba -w2
+
+    read -p "请输入要删除的端口号: " PORT_TO_DELETE
+
+    if ! [[ "$PORT_TO_DELETE" =~ ^[0-9]+$ ]] || [ "$PORT_TO_DELETE" -lt 1 ] || [ "$PORT_TO_DELETE" -gt 65535 ]; then
+        echo -e "${RED}端口号无效。${NC}"
+        return 1
+    fi
+
+    if ! echo "$ports" | grep -qw "$PORT_TO_DELETE"; then
+        echo -e "${RED}端口 ${PORT_TO_DELETE} 未在配置文件中找到。${NC}"
+        return 1
+    fi
+
+    local UPDATED_CONFIG=$(echo "$current_config" | jq "del(.port_password[\"$PORT_TO_DELETE\"])")
+
+    echo "$UPDATED_CONFIG" > "$MAIN_CONFIG_FILE"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}错误：无法更新配置文件，请检查权限。${NC}"
+        return 1
+    fi
+
+    echo -e "${GREEN}端口 ${PORT_TO_DELETE} 已成功从配置文件中删除。${NC}"
+
+    # 检查删除后剩余的端口数量
+    local remaining_ports_count=$(echo "$UPDATED_CONFIG" | jq '.port_password | keys | length // 0')
+
+    if [ "$remaining_ports_count" -eq 1 ]; then
+        convert_to_single_port
+    elif [ "$remaining_ports_count" -eq 0 ]; then
+        echo -e "${YELLOW}所有端口已删除。服务将不会监听任何端口。${NC}"
+        # 此时可以考虑清空 port_password 对象，而不是删除整个文件
+        local FINAL_CONFIG=$(echo "$UPDATED_CONFIG" | jq 'del(.port_password) | .server_port = 0 | .password = ""') # 可以将端口和密码设为默认或空
+        echo "$FINAL_CONFIG" > "$MAIN_CONFIG_FILE"
+        echo -e "${YELLOW}配置文件已更新，不再包含任何代理端口。您可能需要重新添加端口或卸载服务。${NC}"
+    fi
+
+    echo -e "\n${YELLOW}正在重启 Shadowsocks-libev 服务以应用更改...${NC}"
+    systemctl restart "${DEFAULT_SS_SERVICE_NAME}"
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Shadowsocks-libev 服务已成功重启。${NC}"
+    else
+        echo -e "${RED}重启 Shadowsocks-libev 服务失败，请检查日志。${NC}"
+    fi
+}
+
 
 # 卸载 Shadowsocks-libev
 uninstall_ss() {
@@ -626,15 +720,16 @@ main_menu() {
     clear
     echo -e "--- ${GREEN}Shadowsocks-libev 管理脚本${NC} ---"
     echo -e "${BLUE}1.${NC} ${YELLOW}安装/重新配置默认节点 (或修改现有全局配置)${NC}"
-    echo -e "${BLUE}2.${NC} ${YELLOW}新增 Shadowsocks 端口节点${NC}" # Clarified this adds a port
-    echo -e "${BLUE}3.${NC} ${RED}卸载 Shadowsocks-libev 及所有节点${NC}"
-    echo -e "${BLUE}4.${NC} ${GREEN}查看 Shadowsocks 服务运行状态${NC}" # Removed "所有" as there's one main service
-    echo -e "${BLUE}5.${NC} ${YELLOW}停止 Shadowsocks 服务${NC}"
-    echo -e "${BLUE}6.${NC} ${YELLOW}重启 Shadowsocks 服务${NC}"
-    echo -e "${BLUE}7.${NC} ${GREEN}查看所有 Shadowsocks 节点当前配置及 SS 链接${NC}"
+    echo -e "${BLUE}2.${NC} ${YELLOW}新增 Shadowsocks 端口代理${NC}" # Clarified this adds a port
+    echo -e "${BLUE}3.${NC} ${YELLOW}删除 Shadowsocks 端口代理${NC}" # New option
+    echo -e "${BLUE}4.${NC} ${RED}卸载 Shadowsocks-libev 及所有节点${NC}"
+    echo -e "${BLUE}5.${NC} ${GREEN}查看 Shadowsocks 服务运行状态${NC}" # Removed "所有" as there's one main service
+    echo -e "${BLUE}6.${NC} ${YELLOW}停止 Shadowsocks 服务${NC}"
+    echo -e "${BLUE}7.${NC} ${YELLOW}重启 Shadowsocks 服务${NC}"
+    echo -e "${BLUE}8.${NC} ${GREEN}查看所有 Shadowsocks 节点当前配置及 SS 链接${NC}"
     echo -e "${BLUE}0.${NC} ${YELLOW}退出${NC}"
     echo -e "------------------------------------"
-    read -p "请选择一个操作 (0-7): " choice
+    read -p "请选择一个操作 (0-8): " choice
     echo ""
 
     case "$choice" in
@@ -645,18 +740,21 @@ main_menu() {
             add_new_ss_node
             ;;
         3)
+            delete_ss_port # New function call
+            ;;
+        4)
             uninstall_ss
             ;; # 卸载函数内部已包含退出逻辑
-        4)
+        5)
             check_status
             ;;
-        5)
+        6)
             stop_service
             ;;
-        6)
+        7)
             restart_service
             ;;
-        7)
+        8)
             view_current_config
             ;;
         0)
