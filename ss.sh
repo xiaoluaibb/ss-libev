@@ -316,6 +316,14 @@ configure_ss_node_single() {
 
     echo -e "${GREEN}配置文件已生成。${NC}"
     
+    # --- 添加对 /etc/default/shadowsocks-libev 的更新 ---
+    echo -e "${YELLOW}正在更新 Systemd 环境变量文件: /etc/default/shadowsocks-libev...${NC}"
+    echo "CONFFILE=${MAIN_CONFIG_FILE}" > "/etc/default/shadowsocks-libev"
+    echo "DAEMON_ARGS=\"\"" >> "/etc/default/shadowsocks-libev" # 清空 DAEMON_ARGS，因为配置已在 config.json 中
+    echo -e "${GREEN}Systemd 环境变量文件已更新。${NC}"
+    # --- 更新结束 ---
+
+
     echo -e "\n${YELLOW}正在处理 Shadowsocks-libev 服务 (${DEFAULT_SS_SERVICE_NAME}) 的启动和配置...${NC}"
 
     # 停止、禁用、重新加载daemon，再启用、启动，确保配置完全生效
@@ -412,6 +420,10 @@ uninstall_ss() {
         if [ $? -ne 0 ]; then
             echo -e "${RED}警告：配置文件删除可能未完全成功，请手动检查。${NC}"
         fi
+        
+        # 删除 /etc/default/shadowsocks-libev
+        echo -e "${YELLOW}正在删除 Systemd 环境变量文件 /etc/default/shadowsocks-libev...${NC}"
+        rm -f "/etc/default/shadowsocks-libev"
 
         echo -e "${YELLOW}重新加载 Systemd 配置并重置失败的服务状态...${NC}"
         systemctl daemon-reload
