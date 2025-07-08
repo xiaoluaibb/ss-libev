@@ -5,7 +5,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m' # 无颜色
 
 # 检查是否以root用户运行
 if [ "$EUID" -ne 0 ]; then
@@ -142,7 +142,7 @@ configure_ss_node_single() {
         echo -e "${GREEN}使用默认代理端口: ${SS_SERVER_PORT}${NC}"
     else
         SS_SERVER_PORT="$SS_SERVER_PORT_INPUT"
-    fi # <-- 这里是修复后的 'fi'
+    fi
     while ! [[ "$SS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$SS_SERVER_PORT" -lt 1 ] || [ "$SS_SERVER_PORT" -gt 65535 ]; do
         echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
         read -p "请输入 Shadowsocks 代理端口 (默认: ${DEFAULT_SS_SERVER_PORT}): " SS_SERVER_PORT_INPUT
@@ -475,7 +475,7 @@ view_current_config() {
     echo -e "  ${BLUE}监听地址: ${GREEN}$server_addr_display${NC}"
     echo -e "  ${BLUE}代理端口: ${GREEN}$single_server_port${NC}"
     echo -e "  ${BLUE}加密方式: ${GREEN}$global_method${NC}"
-    echo -e "  ${BLUE}连接密码: ${GREEN}(已设置，此处不显示)${NC}" # Don't display password directly
+    echo -e "  ${BLUE}连接密码: ${GREEN}(已设置，此处不显示)${NC}" # 不直接显示密码
     echo -e "  ${BLUE}超时时间: ${GREEN}$global_timeout${NC} 秒"
 
     local public_ipv4=$(get_public_ipv4)
@@ -553,7 +553,7 @@ main_menu() {
 
 # --- 脚本启动逻辑 ---
 
-# 确保安装 jq 和 shadowsocks-libev
+# 确保 jq 和 shadowsocks-libev 已安装
 install_jq || exit 1 # 如果jq安装失败，则退出脚本
 install_ss_libev || exit 1 # 如果shadowsocks-libev安装失败，则退出脚本
 
