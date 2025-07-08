@@ -138,7 +138,7 @@ configure_ss_node() {
     fi
     while ! [[ "$SS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$SS_SERVER_PORT" -lt 1 ] || [ "$SS_SERVER_PORT" -gt 65535 ]; do
         echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
-        read -p "请输入 Shadowsocks 代理端口 (默认: ${DEFAULT_SS_SERVER_PORT}): " SS_SERVER_PORT_INPUT
+        read -p "请重新输入新节点的端口号: " SS_SERVER_PORT_INPUT
         if [ -z "$SS_SERVER_PORT_INPUT" ]; then
             SS_SERVER_PORT="$DEFAULT_SS_SERVER_PORT"
             echo -e "${GREEN}使用默认代理端口: ${SS_SERVER_PORT}${NC}"
@@ -156,7 +156,7 @@ configure_ss_node() {
         SS_PASSWORD="$SS_PASSWORD_INPUT"
     fi
 
-    # 询问加密方式 - 使用带序号的列表 (更新为用户提供的更完整列表)
+    # 询问加密方式 - 使用带序号的列表 (更新为用户提供的更完整列表，并重新加入 2022)
     echo -e "\n${YELLOW}请选择 Shadowsocks 加密方式：${NC}"
     local CRYPTO_METHODS=(
         "aes-256-gcm"           # 推荐
@@ -177,6 +177,7 @@ configure_ss_node() {
         "chacha20"
         "salsa20"
         "rc4-md5"
+        "2022-blake3-aes-256-gcm" # 新增最新加密方式
         "none"                  # 通常不推荐，用于调试
     )
     local default_method_index=-1
@@ -184,7 +185,7 @@ configure_ss_node() {
         if [[ "${CRYPTO_METHODS[$i]}" == "$DEFAULT_SS_METHOD" ]]; then
             default_method_index=$i
         fi
-        echo -e "  ${BLUE}$((i+1)).${NC} ${CRYPTO_METHODS[$i]}" $( [[ "${CRYPTO_METHODS[$i]}" == "aes-256-gcm" || "${CRYPTO_METHODS[$i]}" == "chacha20-ietf-poly1305" || "${CRYPTO_METHODS[$i]}" == "xchacha20-ietf-poly1305" ]] && echo "(推荐)" || echo "" ) ${NC}
+        echo -e "  ${BLUE}$((i+1)).${NC} ${CRYPTO_METHODS[$i]}" $( [[ "${CRYPTO_METHODS[$i]}" == "aes-256-gcm" || "${CRYPTO_METHODS[$i]}" == "chacha20-ietf-poly1305" || "${CRYPTO_METHODS[$i]}" == "xchacha20-ietf-poly1305" || "${CRYPTO_METHODS[$i]}" == "2022-blake3-aes-256-gcm" ]] && echo "(推荐)" || echo "" ) ${NC}
     done
 
     local SS_METHOD_CHOICE
@@ -540,7 +541,7 @@ view_current_config() {
     if [ -z "$config_files" ]; then
         echo -e "${RED}未检测到 Shadowsocks-libev 配置文件。请先运行 '安装/重新配置默认节点' 进行配置。${NC}"
         return
-    }
+    fi # 修正：这里少了一个}，导致语法错误。已补上。
 
     for cfg in $config_files; do
         echo -e "\n${YELLOW}--- 配置文件: ${BLUE}$cfg${NC} ---"
