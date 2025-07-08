@@ -202,7 +202,7 @@ configure_ss_node() {
             echo -e "${RED}输入无效，使用默认加密方法: ${DEFAULT_SS_METHOD}${NC}"
             SS_METHOD="$DEFAULT_SS_METHOD"
         fi
-        done
+    done
 
     # 输入超时时间
     read -p "请输入 Shadowsocks 超时时间 (秒, 默认: ${DEFAULT_SS_TIMEOUT}): " SS_TIMEOUT_INPUT
@@ -291,8 +291,7 @@ EOF
         if [ "$IS_IPV6_ENABLED" = "true" ]; then
             local public_ipv6=$(get_public_ipv6)
             if [ -n "$public_ipv6" ]; then
-                echo -e "${BLUE}IPv6 SS 链接:${NC}"
-                NODE_LINK_IPV6=$(generate_ss_link "[$public_ipv6]" "$SS_SERVER_PORT" "$SS_METHOD" "$SS_PASSWORD") # IPv6 地址需要用方括号括起来
+                local node_link_ipv6=$(generate_ss_link "[$public_ipv6]" "$SS_SERVER_PORT" "$SS_METHOD" "$SS_PASSWORD") # IPv6 地址需要用方括号括起来
                 echo -e "${YELLOW}${NODE_LINK_IPV6}${NC}"
             else
                 echo -e "${YELLOW}提示：虽然检测到IPv6支持，但无法获取公共 IPv6 地址，无法生成 IPv6 SS 链接。${NC}"
@@ -544,7 +543,7 @@ view_current_config() {
     find "$SS_CONFIG_DIR" -maxdepth 1 -name "*.json" | while read -r config_file; do
         found_configs=true
         echo -e "\n${BLUE}配置文件: ${config_file}${NC}"
-        if ! command -v jq &> /D/ev/null; then
+        if ! command -v jq &> /dev/null; then
             echo -e "${RED}错误：未安装 'jq'，无法解析配置文件。请手动安装：sudo apt install jq${NC}"
             continue
         fi
@@ -582,7 +581,7 @@ view_current_config() {
                 local node_link_ipv6=$(generate_ss_link "[$public_ipv6]" "$server_port" "$method" "$password") # IPv6 地址需要方括号
                 echo -e "    ${BLUE}IPv6:${NC} ${YELLOW}${node_link_ipv6}${NC}"
             else
-                echo -e "    ${YELLOW}服务器支持 IPv6，但无法获取公共 IPv6 地址，无法生成 IPv6 SS 链接。${NC}"
+                echo -e "${YELLOW}服务器支持 IPv6，但无法获取公共 IPv6 地址，无法生成 IPv6 SS 链接。${NC}"
             fi
         fi
     done
