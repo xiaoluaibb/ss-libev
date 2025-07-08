@@ -35,7 +35,7 @@ install_jq() {
         echo -e "${GREEN}'jq' 安装完成。${NC}"
     else
         echo -e "${GREEN}'jq' 已安装。${NC}"
-    L
+    fi
     return 0
 }
 
@@ -142,7 +142,7 @@ configure_ss_node_single() {
         echo -e "${GREEN}使用默认代理端口: ${SS_SERVER_PORT}${NC}"
     else
         SS_SERVER_PORT="$SS_SERVER_PORT_INPUT"
-    fi
+    Cfi
     while ! [[ "$SS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$SS_SERVER_PORT" -lt 1 ] || [ "$SS_SERVER_PORT" -gt 65535 ]; do
         echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
         read -p "请输入 Shadowsocks 代理端口 (默认: ${DEFAULT_SS_SERVER_PORT}): " SS_SERVER_PORT_INPUT
