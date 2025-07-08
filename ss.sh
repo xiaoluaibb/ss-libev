@@ -14,9 +14,9 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # 配置文件目录
-SS_CONFIG_DIR="/etc/shadowsocks-libev" 
+SS_CONFIG_DIR="/etc/shadowsocks-libev"
 # 默认主服务单元名称 (根据你的日志确认)
-DEFAULT_SS_SERVICE_NAME="shadowsocks-libev.service" 
+DEFAULT_SS_SERVICE_NAME="shadowsocks-libev.service"
 
 # --- 函数定义 ---
 
@@ -541,21 +541,21 @@ view_current_config() {
     if [ -z "$config_files" ]; then
         echo -e "${RED}未检测到 Shadowsocks-libev 配置文件。请先运行 '安装/重新配置默认节点' 进行配置。${NC}"
         return
-    fi 
+    fi
 
     for cfg in $config_files; do
         echo -e "\n${YELLOW}--- 配置文件: ${BLUE}$cfg${NC} ---"
         if [ -f "$cfg" ]; then
-            local server_addr_raw=$(jq '.server' "$cfg" 2>/dev/null) 
+            local server_addr_raw=$(jq '.server' "$cfg" 2>/dev/null)
             local server_addr_display=""
             local IS_IPV6_ENABLED_IN_CONFIG="false"
 
             if echo "$server_addr_raw" | grep -q '\[.*\]'; then
                 server_addr_display=$(echo "$server_addr_raw" | jq -r 'join(", ")' 2>/dev/null)
-                if echo "$server_addr_raw" | grep -q '"::0"'; then 
+                if echo "$server_addr_raw" | grep -q '"::0"'; then
                     IS_IPV6_ENABLED_IN_CONFIG="true"
                 fi
-            else 
+            else
                 server_addr_display=$(echo "$server_addr_raw" | jq -r '.' 2>/dev/null)
             fi
 
@@ -563,17 +563,17 @@ view_current_config() {
             local password=$(jq -r '.password' "$cfg" 2>/dev/null)
             local method=$(jq -r '.method' "$cfg" 2>/dev/null)
             local timeout=$(jq -r '.timeout' "$cfg" 2>/dev/null)
-            local mode=$(jq -r '.mode' "$cfg" 2>/dev/null) 
+            local mode=$(jq -r '.mode' "$cfg" 2>/dev/null)
 
             echo -e "  ${BLUE}监听地址: ${GREEN}$server_addr_display${NC}"
             echo -e "  ${BLUE}代理端口: ${GREEN}$server_port${NC}"
             echo -e "  ${BLUE}加密方式: ${GREEN}$method${NC}"
             echo -e "  ${BLUE}超时时间: ${GREEN}$timeout${NC} 秒"
-            echo -e "  ${BLUE}模式: ${GREEN}$mode${NC}" 
+            echo -e "  ${BLUE}模式: ${GREEN}$mode${NC}"
             echo -e "  ${BLUE}连接密码: ${GREEN}(已设置，此处不显示)${NC}"
 
             echo -e "\n${GREEN}请复制以下 SS 链接到您的代理软件：${NC}"
-            
+
             local public_ipv4=$(get_public_ipv4)
             if [ -n "$public_ipv4" ]; then
                 echo -e "${BLUE}IPv4 SS 链接:${NC}"
@@ -587,7 +587,7 @@ view_current_config() {
                 local public_ipv6=$(get_public_ipv6)
                 if [ -n "$public_ipv6" ]; then
                     echo -e "${BLUE}IPv6 SS 链接:${NC}"
-                    NODE_LINK_IPV6=$(generate_ss_link "[$public_ipv6]" "$server_port" "$method" "$password") 
+                    NODE_LINK_IPV6=$(generate_ss_link "[$public_ipv6]" "$server_port" "$method" "$password")
                     echo -e "${YELLOW}${NODE_LINK_IPV6}${NC}"
                 else
                     echo -e "${YELLOW}提示：服务器未检测到公网 IPv6 地址，无法生成 IPv6 SS 链接。${NC}"
@@ -604,7 +604,7 @@ view_current_config() {
 # 新增 SS 节点
 add_new_ss_node() {
     echo -e "\n--- ${BLUE}新增 Shadowsocks 节点${NC} ---"
-    install_jq 
+    install_jq
     if [ $? -ne 0 ]; then return; fi
 
     read -p "请输入新节点的端口号 (例如 8389): " NEW_PORT
@@ -651,6 +651,7 @@ main_menu() {
 
     case "$choice" in
         1)
+            # 默认主实例配置文件路径
             configure_ss_node "${SS_CONFIG_DIR}/config.json"
             ;;
         2)
@@ -658,7 +659,7 @@ main_menu() {
             ;;
         3)
             uninstall_ss
-            ;; 
+            ;;
         4)
             check_status
             ;;
@@ -686,7 +687,7 @@ main_menu() {
 
 # --- 脚本启动逻辑 ---
 
-install_jq || exit 1 
-install_ss_libev || exit 1 
+install_jq || exit 1
+install_ss_libev || exit 1
 
 main_menu
