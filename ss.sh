@@ -14,9 +14,10 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # 配置文件目录
-SS_CONFIG_DIR="/etc/shadowsocks-libev" 
+SS_CONFIG_DIR="/etc/shadowsocks-libev"
 # 默认主服务单元名称 (根据你的日志确认)
-DEFAULT_SS_SERVICE_NAME="shadowsocks-libev.service" 
+DEFAULT_SS_SERVICE_NAME="shadowsocks-libev.service"
+MAIN_CONFIG_FILE="${SS_CONFIG_DIR}/config.json" # 主配置文件
 
 # --- 函数定义 ---
 
@@ -71,7 +72,6 @@ get_public_ipv6() {
     echo "$public_ipv6" # 直接返回结果
 }
 
-
 # 生成 SS 链接函数 (将参数编码为 base64)
 # 参数：server_ip, server_port, method, password
 generate_ss_link() {
@@ -88,9 +88,9 @@ generate_ss_link() {
     echo "ss://${credentials_base64}@${server_ip}:${server_port}#Shadowsocks_Node"
 }
 
-# 配置 Shadowsocks 节点
-configure_ss_node() {
-    local config_file_path=$1 # 传入的配置文件路径，例如 /etc/shadowsocks-libev/config.json
+# 配置 Shadowsocks 节点 (现在是添加/修改服务器配置到主 config.json)
+configure_ss_node_single() {
+    local is_new_node=$1 # "true" for new node, "false" for reconfiguring default
 
     echo -e "\n--- ${BLUE}配置 Shadowsocks 节点${NC} ---"
 
@@ -137,16 +137,16 @@ configure_ss_node() {
             ;;
     esac
 
-    # 询问代理端口
-    read -p "请输入 Shadowsocks 代理端口 (默认: ${DEFAULT_SS_SERVER_PORT}): " SS_SERVER_PORT_INPUT
-    if [ -z "$SS_SERVER_PORT_INPUT" ]; then
-        SS_SERVER_PORT="$DEFAULT_SS_SERVER_PORT"
-        echo -e "${GREEN}使用默认代理端口: ${SS_SERVER_PORT}${NC}"
-    else
+    local SS_SERVER_PORT # Declare the variable
+    if [ "$is_new_node" = "true" ]; then
+        read -p "请输入新 Shadowsocks 代理端口: " SS_SERVER_PORT_INPUT
+        while ! [[ "$SS_SERVER_PORT_INPUT" =~ ^[0-9]+$ ]] || [ "$SS_SERVER_PORT_INPUT" -lt 1 ] || [ "$SS_SERVER_PORT_INPUT" -gt 65535 ]; do
+            echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
+            read -p "请重新输入新 Shadowsocks 代理端口: " SS_SERVER_PORT_INPUT
+        done
         SS_SERVER_PORT="$SS_SERVER_PORT_INPUT"
-    fi
-    while ! [[ "$SS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$SS_SERVER_PORT" -lt 1 ] || [ "$SS_SERVER_PORT" -gt 65535 ]; do
-        echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
+    else
+        # For default node, allow accepting default port
         read -p "请输入 Shadowsocks 代理端口 (默认: ${DEFAULT_SS_SERVER_PORT}): " SS_SERVER_PORT_INPUT
         if [ -z "$SS_SERVER_PORT_INPUT" ]; then
             SS_SERVER_PORT="$DEFAULT_SS_SERVER_PORT"
@@ -154,7 +154,25 @@ configure_ss_node() {
         else
             SS_SERVER_PORT="$SS_SERVER_PORT_INPUT"
         fi
-    done
+        while ! [[ "$SS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$SS_SERVER_PORT" -lt 1 ] || [ "$SS_SERVER_PORT" -gt 65535 ]; do
+            echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
+            read -p "请输入 Shadowsocks 代理端口 (默认: ${DEFAULT_SS_SERVER_PORT}): " SS_SERVER_PORT_INPUT
+            if [ -z "$SS_SERVER_PORT_INPUT" ]; then
+                SS_SERVER_PORT="$DEFAULT_SS_SERVER_PORT"
+                echo -e "${GREEN}使用默认代理端口: ${SS_SERVER_PORT}${NC}"
+            else
+                SS_SERVER_PORT="$SS_SERVER_PORT_INPUT"
+            fi
+        done
+    fi
+
+    # Check if this port already exists in config.json
+    if [ -f "$MAIN_CONFIG_FILE" ]; then
+        if jq -e ".port_password | to_entries[] | select(.key==\"$SS_SERVER_PORT\")" "$MAIN_CONFIG_FILE" >/dev/null 2>&1; then
+            echo -e "${RED}错误：端口 ${SS_SERVER_PORT} 已在 ${MAIN_CONFIG_FILE} 中配置。请选择其他端口或修改现有配置。${NC}"
+            return 1
+        fi
+    fi
 
     # 询问密码 (显示输入)
     read -p "请输入 Shadowsocks 连接密码 (默认: ${DEFAULT_SS_PASSWORD}): " SS_PASSWORD_INPUT
@@ -218,19 +236,57 @@ configure_ss_node() {
         fi
     done
 
-    echo -e "\n${YELLOW}正在生成 Shadowsocks-libev 配置文件: ${config_file_path}...${NC}"
+    echo -e "\n${YELLOW}正在更新 Shadowsocks-libev 配置文件: ${MAIN_CONFIG_FILE}...${NC}"
 
-    # 创建配置文件内容 - server 字段直接使用 SS_SERVER_ADDR_CONFIG
-    cat <<EOF > "$config_file_path"
-{
-    "server":$SS_SERVER_ADDR_CONFIG,
-    "server_port":$SS_SERVER_PORT,
-    "password":"$SS_PASSWORD",
-    "method":"$SS_METHOD",
-    "timeout":$SS_TIMEOUT,
-    "fast_open":true
-}
-EOF
+    local new_server_config=""
+    # If the server address is an array, ensure it's formatted correctly
+    if [[ "$SS_SERVER_ADDR_CONFIG" == \[*\] ]]; then
+        new_server_config="\"server\":$SS_SERVER_ADDR_CONFIG,"
+    else
+        new_server_config="\"server\":$SS_SERVER_ADDR_CONFIG,"
+    fi
+
+    local current_config_json="{}"
+    if [ -f "$MAIN_CONFIG_FILE" ]; then
+        current_config_json=$(cat "$MAIN_CONFIG_FILE")
+    fi
+
+    # Check if 'port_password' exists or if it's the first config
+    if echo "$current_config_json" | jq -e '.port_password' >/dev/null 2>&1; then
+        # Add new port to existing port_password object
+        UPDATED_CONFIG=$(echo "$current_config_json" | jq \
+            --argjson port "$SS_SERVER_PORT" \
+            --arg method "$SS_METHOD" \
+            --arg password "$SS_PASSWORD" \
+            --arg timeout "$SS_TIMEOUT" \
+            '.port_password[$port | tostring] = $password | .method = $method | .timeout = $timeout | .fast_open = true | .'server=$SS_SERVER_ADDR_CONFIG) # Update method and timeout at top level, and server
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}错误：无法更新配置文件，可能是 JSON 格式错误。${NC}"
+            return 1
+        fi
+    else
+        # Create a new config with server, port_password, method, timeout, fast_open
+        UPDATED_CONFIG=$(jq -n \
+            --argjson server_addr "$SS_SERVER_ADDR_CONFIG" \
+            --argjson port "$SS_SERVER_PORT" \
+            --arg method "$SS_METHOD" \
+            --arg password "$SS_PASSWORD" \
+            --arg timeout "$SS_TIMEOUT" \
+            '{
+                "server": $server_addr,
+                "server_port": $port,
+                "password": $password,
+                "method": $method,
+                "timeout": $timeout,
+                "fast_open": true
+            }')
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}错误：无法生成初始配置文件。${NC}"
+            return 1
+        fi
+    fi
+
+    echo "$UPDATED_CONFIG" > "$MAIN_CONFIG_FILE"
 
     if [ $? -ne 0 ]; then
       echo -e "${RED}配置文件生成失败，请检查权限或路径。${NC}"
@@ -239,34 +295,24 @@ EOF
 
     echo -e "${GREEN}配置文件已生成。${NC}"
     
-    # 根据配置文件路径确定服务实例名称
-    local service_instance=""
-    if [ "$config_file_path" = "${SS_CONFIG_DIR}/config.json" ]; then
-        service_instance="${DEFAULT_SS_SERVICE_NAME}" # 使用默认服务名称
-    else
-        # 对于多节点，使用实例模式
-        local port_from_file=$(jq -r '.server_port' "$config_file_path" 2>/dev/null)
-        service_instance="${DEFAULT_SS_SERVICE_NAME%.service}@${port_from_file}.service" # 例如 shadowsocks-libev@8389.service
-    fi
-    
-    echo -e "\n${YELLOW}正在处理 Shadowsocks-libev 服务 (${service_instance}) 的启动和配置...${NC}"
+    echo -e "\n${YELLOW}正在处理 Shadowsocks-libev 服务 (${DEFAULT_SS_SERVICE_NAME}) 的启动和配置...${NC}"
 
     # 停止、禁用、重新加载daemon，再启用、启动，确保配置完全生效
     echo -e "${YELLOW}尝试停止服务...${NC}"
-    systemctl stop "${service_instance}" > /dev/null 2>&1 || true # 允许停止失败，如果服务未运行
+    systemctl stop "${DEFAULT_SS_SERVICE_NAME}" > /dev/null 2>&1 || true # 允许停止失败，如果服务未运行
 
     echo -e "${YELLOW}尝试禁用服务 (防止旧的启动方式干扰)...${NC}"
-    systemctl disable "${service_instance}" > /dev/null 2>&1 || true
+    systemctl disable "${DEFAULT_SS_SERVICE_NAME}" > /dev/null 2>&1 || true
 
     echo -e "${YELLOW}重新加载 Systemd 配置...${NC}"
     systemctl daemon-reload
 
     echo -e "${YELLOW}设置服务开机启动并启动...${NC}"
-    systemctl enable "${service_instance}"
-    systemctl start "${service_instance}"
+    systemctl enable "${DEFAULT_SS_SERVICE_NAME}"
+    systemctl start "${DEFAULT_SS_SERVICE_NAME}"
 
     if [ $? -eq 0 ]; then
-      echo -e "${GREEN}Shadowsocks-libev 服务 (${service_instance}) 已成功重启并设置开机启动！${NC}"
+      echo -e "${GREEN}Shadowsocks-libev 服务 (${DEFAULT_SS_SERVICE_NAME}) 已成功重启并设置开机启动！${NC}"
       echo -e "${BLUE}配置详情：${NC}"
       echo -e "  ${BLUE}监听地址: ${GREEN}$SS_SERVER_ADDR_DISPLAY${NC}" # 显示时使用易读的格式
       echo -e "  ${BLUE}代理端口: ${GREEN}$SS_SERVER_PORT${NC}"
@@ -301,11 +347,11 @@ EOF
       echo -e "${BLUE}(提示：SS 链接中的 IP 地址已自动尝试获取您的公网 IP)${NC}"
 
     else
-      echo -e "${RED}Shadowsocks-libev 服务 (${service_instance}) 启动失败，请检查日志 (journalctl -u ${service_instance}) 获取更多信息。${NC}"
+      echo -e "${RED}Shadowsocks-libev 服务 (${DEFAULT_SS_SERVICE_NAME}) 启动失败，请检查日志 (journalctl -u ${DEFAULT_SS_SERVICE_NAME}) 获取更多信息。${NC}"
     fi
 
     echo -e "\n--- ${GREEN}配置完成${NC} ---"
-    echo -e "您可以运行 'systemctl status ${service_instance}' 来检查服务状态。"
+    echo -e "您可以运行 'systemctl status ${DEFAULT_SS_SERVICE_NAME}' 来检查服务状态。"
 }
 
 # 卸载 Shadowsocks-libev
@@ -313,30 +359,17 @@ uninstall_ss() {
     echo -e "\n--- ${RED}卸载 Shadowsocks-libev${NC} ---"
     read -p "您确定要卸载 Shadowsocks-libev 及所有节点吗？(y/N): " confirm
     if [[ "$confirm" =~ ^[yY]$ ]]; then
-        echo -e "${YELLOW}正在停止并禁用所有 Shadowsocks-libev 服务实例...${NC}"
+        echo -e "${YELLOW}正在停止并禁用 Shadowsocks-libev 主服务...${NC}"
         
-        # 停止并禁用所有 shadowsocks-libev@*.service 实例
-        systemctl list-units --type=service --all | grep "shadowsocks-libev@" | awk '{print $1}' | while read -r service_name; do
-            echo -e "${YELLOW}停止并禁用: ${service_name}${NC}"
-            systemctl stop "$service_name" > /dev/null 2>&1
-            systemctl disable "$service_name" > /dev/null 2>&1
-        done
-        
-        # 停止并禁用默认的 shadowsocks-libev.service 
-        if systemctl list-units --type=service --all | grep -q "${DEFAULT_SS_SERVICE_NAME}"; then
-            echo -e "${YELLOW}停止并禁用: ${DEFAULT_SS_SERVICE_NAME}${NC}"
-            systemctl stop "${DEFAULT_SS_SERVICE_NAME}" > /dev/null 2>&1
-            systemctl disable "${DEFAULT_SS_SERVICE_NAME}" > /dev/null 2>&1
-        fi
+        systemctl stop "${DEFAULT_SS_SERVICE_NAME}" > /dev/null 2>&1
+        systemctl disable "${DEFAULT_SS_SERVICE_NAME}" > /dev/null 2>&1
 
         echo -e "${YELLOW}强制终止所有残留的 ss-server 进程...${NC}"
-        # 使用 pgrep 查找 ss-server 进程并终止 (更强制的方式)
         PIDS=$(pgrep -f "ss-server")
         if [ -n "$PIDS" ]; then
             echo -e "${YELLOW}检测到以下 ss-server 进程 PID: ${PIDS}，正在强制终止...${NC}"
             kill -9 $PIDS > /dev/null 2>&1 || true
-            sleep 1 # 等待进程终止
-            # 再次检查是否终止
+            sleep 1
             PIDS_AFTER_KILL=$(pgrep -f "ss-server")
             if [ -n "$PIDS_AFTER_KILL" ]; then
                 echo -e "${RED}警告：部分 ss-server 进程未能被终止 (PID: ${PIDS_AFTER_KILL})。您可能需要手动检查。${NC}"
@@ -354,18 +387,16 @@ uninstall_ss() {
         fi
 
         echo -e "${YELLOW}正在删除所有配置文件...${NC}"
-        rm -rf "$SS_CONFIG_DIR" # 删除整个配置目录
+        rm -rf "$SS_CONFIG_DIR"
         if [ $? -ne 0 ]; then
             echo -e "${RED}警告：配置文件删除可能未完全成功，请手动检查。${NC}"
         fi
 
-        # 重新加载 Systemd 配置以清除已卸载的服务
         echo -e "${YELLOW}重新加载 Systemd 配置并重置失败的服务状态...${NC}"
         systemctl daemon-reload
-        systemctl reset-failed # 重置所有失败的服务单元状态
+        systemctl reset-failed
         
         echo -e "${GREEN}Shadowsocks-libev 及所有节点已成功卸载。${NC}"
-        # 卸载完成后直接退出
         exit 0
     else
         echo -e "${BLUE}卸载操作已取消。${NC}"
@@ -375,28 +406,10 @@ uninstall_ss() {
 # 查看运行状态
 check_status() {
     echo -e "\n--- ${BLUE}Shadowsocks-libev 运行状态${NC} ---"
-    local found_services=false
     
-    # 优先显示默认服务
-    if systemctl list-units --type=service --all | grep -q "${DEFAULT_SS_SERVICE_NAME}"; then
-        echo -e "\n${BLUE}服务: ${DEFAULT_SS_SERVICE_NAME}${NC}"
-        systemctl status "${DEFAULT_SS_SERVICE_NAME}" --no-pager
-        found_services=true
-    fi
+    echo -e "\n${BLUE}服务: ${DEFAULT_SS_SERVICE_NAME}${NC}"
+    systemctl status "${DEFAULT_SS_SERVICE_NAME}" --no-pager
 
-    # 再显示所有 shadowsocks-libev@*.service 实例
-    systemctl list-units --type=service --all | grep "shadowsocks-libev@" | awk '{print $1}' | while read -r service_name; do
-        # 确保不重复显示默认服务，如果它也被 grep 匹配到的话
-        if [[ "$service_name" != "${DEFAULT_SS_SERVICE_NAME}" ]]; then
-            echo -e "\n${BLUE}服务: ${service_name}${NC}"
-            systemctl status "$service_name" --no-pager
-            found_services=true
-        fi
-    done
-
-    if [ "$found_services" = false ]; then
-        echo -e "${YELLOW}未检测到 Shadowsocks-libev 服务实例。${NC}"
-    fi
     echo -e "\n${BLUE}正在检查是否有残留的 ss-server 进程...${NC}"
     if command -v pgrep &> /dev/null; then
         local ss_pids=$(pgrep -f "ss-server")
@@ -411,114 +424,59 @@ check_status() {
         echo -e "${YELLOW}请尝试手动运行 'ps aux | grep ss-server' 检查。${NC}"
     fi
 
-    echo -e "\n${BLUE}正在检查 12306 端口使用情况...${NC}"
-    if command -v lsof &> /dev/null; then
-        lsof -i:12306
-        if [ $? -ne 0 ]; then
-            echo -e "${GREEN}端口 12306 未被占用。${NC}"
+    echo -e "\n${BLUE}正在检查配置中所有端口的使用情况...${NC}"
+    if ! command -v jq &> /dev/null; then
+        echo -e "${RED}'jq' 命令未安装，无法解析配置文件以获取端口列表。请先安装 jq。${NC}"
+        return
+    fi
+    if [ -f "$MAIN_CONFIG_FILE" ]; then
+        # Check for single server_port
+        local single_port=$(jq -r '.server_port // empty' "$MAIN_CONFIG_FILE" 2>/dev/null)
+        if [ -n "$single_port" ]; then
+            echo -e "${BLUE}端口 ${single_port}：${NC}"
+            if command -v lsof &> /dev/null; then
+                lsof -i:"$single_port" || echo -e "${GREEN}端口 ${single_port} 未被占用。${NC}"
+            else
+                echo -e "${YELLOW}lsof 未安装，请手动检查端口 ${single_port} (netstat -tulnp | grep ${single_port} 或 ss -tulnp | grep ${single_port}).${NC}"
+            fi
+        fi
+
+        # Check for port_password if present
+        local multi_ports=$(jq -r '.port_password | keys[]' "$MAIN_CONFIG_FILE" 2>/dev/null)
+        if [ -n "$multi_ports" ]; then
+            for port in $multi_ports; do
+                echo -e "${BLUE}端口 ${port}：${NC}"
+                if command -v lsof &> /dev/null; then
+                    lsof -i:"$port" || echo -e "${GREEN}端口 ${port} 未被占用。${NC}"
+                else
+                    echo -e "${YELLOW}lsof 未安装，请手动检查端口 ${port} (netstat -tulnp | grep ${port} 或 ss -tulnp | grep ${port}).${NC}"
+                fi
+            done
         fi
     else
-        echo -e "${YELLOW}警告：lsof 命令未找到，无法检查端口占用情况。${NC}"
-        echo -e "${YELLOW}请尝试手动运行 'netstat -tulnp | grep 12306' 或 'ss -tulnp | grep 12306' 检查。${NC}"
+        echo -e "${YELLOW}主配置文件 ${MAIN_CONFIG_FILE} 不存在。${NC}"
     fi
-
 }
 
 # 停止服务
 stop_service() {
     echo -e "\n--- ${BLUE}停止 Shadowsocks-libev 服务${NC} ---"
-    local has_services=false
-    local i=1
-    local services_to_manage=()
-
-    # 将默认服务添加到列表
-    if systemctl list-units --type=service --all | grep -q "${DEFAULT_SS_SERVICE_NAME}"; then
-        services_to_manage+=("${DEFAULT_SS_SERVICE_NAME}")
-        echo -e "  ${BLUE}${i}.${NC} ${DEFAULT_SS_SERVICE_NAME}"
-        i=$((i+1))
-        has_services=true
-    fi
-
-    # 将所有 shadowsocks-libev@*.service 实例添加到列表
-    systemctl list-units --type=service --all | grep "shadowsocks-libev@" | awk '{print $1}' | while read -r service_name; do
-        if [[ "$service_name" != "${DEFAULT_SS_SERVICE_NAME}" ]]; then # 避免重复
-            services_to_manage+=("$service_name")
-            echo -e "  ${BLUE}${i}.${NC} ${service_name}"
-            i=$((i+1))
-            has_services=true
-        fi
-    done
-
-    if [ "$has_services" = false ]; then
-        echo -e "${YELLOW}未检测到可停止的 Shadowsocks-libev 服务实例。${NC}"
-        return
-    fi
-
-    echo -e "  ${BLUE}0.${NC} 返回主菜单"
-
-    read -p "请输入选择 (0-$((i-1))): " choice
-    if [ "$choice" -eq 0 ]; then
-        echo -e "${BLUE}操作已取消。${NC}"
-        return
-    elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le $((i-1)) ]; then
-        local selected_service=${services_to_manage[$((choice-1))]}
-        systemctl stop "$selected_service"
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}服务 '${selected_service}' 已停止。${NC}"
-        else
-            echo -e "${RED}停止服务 '${selected_service}' 失败，请检查。${NC}"
-        fi
+    systemctl stop "${DEFAULT_SS_SERVICE_NAME}"
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}服务 '${DEFAULT_SS_SERVICE_NAME}' 已停止。${NC}"
     else
-        echo -e "${RED}无效的选择。${NC}"
+        echo -e "${RED}停止服务 '${DEFAULT_SS_SERVICE_NAME}' 失败，请检查。${NC}"
     fi
 }
 
 # 重启服务
 restart_service() {
     echo -e "\n--- ${BLUE}重启 Shadowsocks-libev 服务${NC} ---"
-    local has_services=false
-    local i=1
-    local services_to_manage=()
-
-    # 将默认服务添加到列表
-    if systemctl list-units --type=service --all | grep -q "${DEFAULT_SS_SERVICE_NAME}"; then
-        services_to_manage+=("${DEFAULT_SS_SERVICE_NAME}")
-        echo -e "  ${BLUE}${i}.${NC} ${DEFAULT_SS_SERVICE_NAME}"
-        i=$((i+1))
-        has_services=true
-    fi
-
-    # 将所有 shadowsocks-libev@*.service 实例添加到列表
-    systemctl list-units --type=service --all | grep "shadowsocks-libev@" | awk '{print $1}' | while read -r service_name; do
-        if [[ "$service_name" != "${DEFAULT_SS_SERVICE_NAME}" ]]; then # 避免重复
-            services_to_manage+=("$service_name")
-            echo -e "  ${BLUE}${i}.${NC} ${service_name}"
-            i=$((i+1))
-            has_services=true
-        fi
-    done
-
-    if [ "$has_services" = false ]; then
-        echo -e "${YELLOW}未检测到可重启的 Shadowsocks-libev 服务实例。${NC}"
-        return
-    fi
-
-    echo -e "  ${BLUE}0.${NC} 返回主菜单"
-
-    read -p "请输入选择 (0-$((i-1))): " choice
-    if [ "$choice" -eq 0 ]; then
-        echo -e "${BLUE}操作已取消。${NC}"
-        return
-    elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le $((i-1)) ]; then
-        local selected_service=${services_to_manage[$((choice-1))]}
-        systemctl restart "$selected_service"
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}服务 '${selected_service}' 已重启。${NC}"
-        else
-            echo -e "${RED}重启服务 '${selected_service}' 失败，请检查。${NC}"
-        fi
+    systemctl restart "${DEFAULT_SS_SERVICE_NAME}"
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}服务 '${DEFAULT_SS_SERVICE_NAME}' 已重启。${NC}"
     else
-        echo -e "${RED}无效的选择。${NC}"
+        echo -e "${RED}重启服务 '${DEFAULT_SS_SERVICE_NAME}' 失败，请检查。${NC}"
     fi
 }
 
@@ -530,101 +488,102 @@ view_current_config() {
         return
     fi
 
-    local config_files=$(find "$SS_CONFIG_DIR" -maxdepth 1 -name "*.json" -print 2>/dev/null)
-    if [ -z "$config_files" ]; then
-        echo -e "${RED}未检测到 Shadowsocks-libev 配置文件。请先运行 '安装/重新配置默认节点' 进行配置。${NC}"
+    if [ ! -f "$MAIN_CONFIG_FILE" ]; then
+        echo -e "${RED}未检测到 Shadowsocks-libev 主配置文件: ${MAIN_CONFIG_FILE}。请先运行 '安装/重新配置默认节点' 进行配置。${NC}"
         return
     fi
 
-    for cfg in $config_files; do
-        echo -e "\n${YELLOW}--- 配置文件: ${BLUE}$cfg${NC} ---"
-        if [ -f "$cfg" ]; then
-            local server_addr_raw=$(jq '.server' "$cfg" 2>/dev/null) # 获取原始JSON格式的server字段
-            local server_addr_display=""
-            local IS_IPV6_ENABLED_IN_CONFIG="false"
+    echo -e "\n${YELLOW}--- 配置文件: ${BLUE}$MAIN_CONFIG_FILE${NC} ---"
+    local server_addr_raw=$(jq '.server' "$MAIN_CONFIG_FILE" 2>/dev/null)
+    local server_addr_display=""
+    local IS_IPV6_ENABLED_IN_CONFIG="false"
 
-            # 判断是字符串还是数组
-            if echo "$server_addr_raw" | grep -q '\[.*\]'; then # 如果是数组
-                server_addr_display=$(echo "$server_addr_raw" | jq -r 'join(", ")' 2>/dev/null)
-                # 检查是否包含IPv6监听地址 (::1)
-                if echo "$server_addr_raw" | grep -q '"::1"'; then
-                    IS_IPV6_ENABLED_IN_CONFIG="true"
-                fi
-            else # 如果是字符串
-                server_addr_display=$(echo "$server_addr_raw" | jq -r '.' 2>/dev/null)
-            fi
+    if echo "$server_addr_raw" | grep -q '\[.*\]'; then
+        server_addr_display=$(echo "$server_addr_raw" | jq -r 'join(", ")' 2>/dev/null)
+        if echo "$server_addr_raw" | grep -q '"::1"'; then
+            IS_IPV6_ENABLED_IN_CONFIG="true"
+        fi
+    else
+        server_addr_display=$(echo "$server_addr_raw" | jq -r '.' 2>/dev/null)
+    fi
 
-            local server_port=$(jq -r '.server_port' "$cfg" 2>/dev/null)
-            local password=$(jq -r '.password' "$cfg" 2>/dev/null)
-            local method=$(jq -r '.method' "$cfg" 2>/dev/null)
-            local timeout=$(jq -r '.timeout' "$cfg" 2>/dev/null)
+    local global_method=$(jq -r '.method' "$MAIN_CONFIG_FILE" 2>/dev/null)
+    local global_timeout=$(jq -r '.timeout' "$MAIN_CONFIG_FILE" 2>/dev/null)
 
-            echo -e "  ${BLUE}监听地址: ${GREEN}$server_addr_display${NC}"
-            echo -e "  ${BLUE}代理端口: ${GREEN}$server_port${NC}"
-            echo -e "  ${BLUE}加密方式: ${GREEN}$method${NC}"
-            echo -e "  ${BLUE}超时时间: ${GREEN}$timeout${NC} 秒"
-            echo -e "  ${BLUE}连接密码: ${GREEN}(已设置，此处不显示)${NC}"
+    echo -e "  ${BLUE}全局监听地址: ${GREEN}$server_addr_display${NC}"
+    echo -e "  ${BLUE}全局加密方式: ${GREEN}$global_method${NC}"
+    echo -e "  ${BLUE}全局超时时间: ${GREEN}$global_timeout${NC} 秒"
+    echo -e "  ${BLUE}连接密码: ${GREEN}(各端口独立配置或全局配置)${NC}"
 
-            echo -e "\n${GREEN}请复制以下 SS 链接到您的代理软件：${NC}"
+    local public_ipv4=$(get_public_ipv4)
+    local public_ipv6=$(get_public_ipv6)
+
+    # Display single server_port if it exists (older config style)
+    local single_server_port=$(jq -r '.server_port // empty' "$MAIN_CONFIG_FILE" 2>/dev/null)
+    local single_password=$(jq -r '.password // empty' "$MAIN_CONFIG_FILE" 2>/dev/null)
+
+    if [ -n "$single_server_port" ]; then
+        echo -e "\n${BLUE}--- 单端口配置 (Port: $single_server_port) ---${NC}"
+        echo -e "  ${BLUE}代理端口: ${GREEN}$single_server_port${NC}"
+        echo -e "  ${BLUE}连接密码: ${GREEN}(已设置，此处不显示)${NC}" # Don't display password directly
+
+        echo -e "\n${GREEN}请复制以下 SS 链接到您的代理软件：${NC}"
+        if [ -n "$public_ipv4" ]; then
+            echo -e "${BLUE}IPv4 SS 链接:${NC}"
+            NODE_LINK_IPV4=$(generate_ss_link "$public_ipv4" "$single_server_port" "$global_method" "$single_password")
+            echo -e "${YELLOW}${NODE_LINK_IPV4}${NC}"
+        fi
+        if [ "$IS_IPV6_ENABLED_IN_CONFIG" = "true" ] && [ -n "$public_ipv6" ]; then
+            echo -e "${BLUE}IPv6 SS 链接:${NC}"
+            NODE_LINK_IPV6=$(generate_ss_link "[$public_ipv6]" "$single_server_port" "$global_method" "$single_password")
+            echo -e "${YELLOW}${NODE_LINK_IPV6}${NC}"
+        fi
+    fi
+
+    # Display multiple port_password configurations
+    local port_passwords=$(jq -r '.port_password | to_entries[] | "\(.key) \(.value)"' "$MAIN_CONFIG_FILE" 2>/dev/null)
+
+    if [ -n "$port_passwords" ]; then
+        echo -e "\n${BLUE}--- 多端口配置 ---${NC}"
+        echo "$port_passwords" | while read -r port password; do
+            echo -e "\n${BLUE}端口: ${GREEN}$port${NC}"
+            echo -e "  ${BLUE}连接密码: ${GREEN}(已设置，此处不显示)${NC}" # Don't display password directly
+            echo -e "  ${BLUE}加密方式: ${GREEN}$global_method${NC}" # Assume global method for now
             
-            # 获取并生成 IPv4 SS 链接
-            local public_ipv4=$(get_public_ipv4)
+            echo -e "${GREEN}请复制以下 SS 链接到您的代理软件：${NC}"
             if [ -n "$public_ipv4" ]; then
                 echo -e "${BLUE}IPv4 SS 链接:${NC}"
-                NODE_LINK_IPV4=$(generate_ss_link "$public_ipv4" "$server_port" "$method" "$password")
+                NODE_LINK_IPV4=$(generate_ss_link "$public_ipv4" "$port" "$global_method" "$password")
                 echo -e "${YELLOW}${NODE_LINK_IPV4}${NC}"
             else
                 echo -e "${RED}警告：未能获取到公网 IPv4 地址，无法生成 IPv4 SS 链接。${NC}"
             fi
 
-            # 如果配置文件启用了 IPv6 监听，则尝试获取并生成 IPv6 SS 链接
-            if [ "$IS_IPV6_ENABLED_IN_CONFIG" = "true" ]; then
-                local public_ipv6=$(get_public_ipv6)
-                if [ -n "$public_ipv6" ]; then
-                    echo -e "${BLUE}IPv6 SS 链接:${NC}"
-                    NODE_LINK_IPV6=$(generate_ss_link "[$public_ipv6]" "$server_port" "$method" "$SS_PASSWORD") # IPv6 地址需要用方括号括起来
-                    echo -e "${YELLOW}${NODE_LINK_IPV6}${NC}"
-                else
-                    echo -e "${YELLOW}提示：服务器未检测到公网 IPv6 地址，无法生成 IPv6 SS 链接。${NC}"
-                fi
+            if [ "$IS_IPV6_ENABLED_IN_CONFIG" = "true" ] && [ -n "$public_ipv6" ]; then
+                echo -e "${BLUE}IPv6 SS 链接:${NC}"
+                NODE_LINK_IPV6=$(generate_ss_link "[$public_ipv6]" "$port" "$global_method" "$password")
+                echo -e "${YELLOW}${NODE_LINK_IPV6}${NC}"
+            else
+                echo -e "${YELLOW}提示：服务器未检测到公网 IPv6 地址，无法生成 IPv6 SS 链接。${NC}"
             fi
-
-        else
-            echo -e "${RED}文件不存在或无法读取。${NC}"
+        done
+    else
+        if [ -z "$single_server_port" ]; then
+            echo -e "${YELLOW}主配置文件中未检测到有效的代理端口配置 (单端口或多端口)。${NC}"
         fi
-    done
+    fi
+
+    echo -e "${BLUE}(提示：SS 链接中的 IP 地址已自动尝试获取您的公网 IP)${NC}"
     echo -e "------------------------------------"
 }
 
-# 新增 SS 节点
+# 新增 SS 节点 (现在是向 config.json 添加一个新端口配置)
 add_new_ss_node() {
     echo -e "\n--- ${BLUE}新增 Shadowsocks 节点${NC} ---"
     install_jq # 确保 jq 已安装
     if [ $? -ne 0 ]; then return; fi
 
-    read -p "请输入新节点的端口号 (例如 8389): " NEW_PORT
-    while ! [[ "$NEW_PORT" =~ ^[0-9]+$ ]] || [ "$NEW_PORT" -lt 1 ] || [ "$NEW_PORT" -gt 65535 ]; do
-        echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
-        read -p "请重新输入新节点的端口号: " NEW_PORT
-    done
-
-    # 检查端口是否已被现有节点使用
-    local existing_ports=()
-    local config_files=$(find "$SS_CONFIG_DIR" -maxdepth 1 -name "*.json" -print 2>/dev/null)
-    for cfg in $config_files; do
-        local existing_port=$(jq -r '.server_port' "$cfg" 2>/dev/null)
-        existing_ports+=("$existing_port")
-    done
-
-    for p in "${existing_ports[@]}"; do
-        if [ "$p" = "$NEW_PORT" ]; then
-            echo -e "${RED}错误：端口 ${NEW_PORT} 已被现有 Shadowsocks 节点使用。请选择其他端口。${NC}"
-            return 1
-        fi
-    done
-
-    local new_config_file="${SS_CONFIG_DIR}/config-${NEW_PORT}.json"
-    configure_ss_node "$new_config_file"
+    configure_ss_node_single "true"
 }
 
 
@@ -633,12 +592,12 @@ add_new_ss_node() {
 main_menu() {
     clear
     echo -e "--- ${GREEN}Shadowsocks-libev 管理脚本${NC} ---"
-    echo -e "${BLUE}1.${NC} ${YELLOW}安装/重新配置默认节点 (端口: 12306)${NC}"
-    echo -e "${BLUE}2.${NC} ${YELLOW}新增 Shadowsocks 节点${NC}"
+    echo -e "${BLUE}1.${NC} ${YELLOW}安装/重新配置默认节点 (或修改现有全局配置)${NC}"
+    echo -e "${BLUE}2.${NC} ${YELLOW}新增 Shadowsocks 端口节点${NC}" # Clarified this adds a port
     echo -e "${BLUE}3.${NC} ${RED}卸载 Shadowsocks-libev 及所有节点${NC}"
-    echo -e "${BLUE}4.${NC} ${GREEN}查看所有 Shadowsocks 节点运行状态${NC}"
-    echo -e "${BLUE}5.${NC} ${YELLOW}停止 Shadowsocks 服务实例${NC}"
-    echo -e "${BLUE}6.${NC} ${YELLOW}重启 Shadowsocks 服务实例${NC}"
+    echo -e "${BLUE}4.${NC} ${GREEN}查看 Shadowsocks 服务运行状态${NC}" # Removed "所有" as there's one main service
+    echo -e "${BLUE}5.${NC} ${YELLOW}停止 Shadowsocks 服务${NC}"
+    echo -e "${BLUE}6.${NC} ${YELLOW}重启 Shadowsocks 服务${NC}"
     echo -e "${BLUE}7.${NC} ${GREEN}查看所有 Shadowsocks 节点当前配置及 SS 链接${NC}"
     echo -e "${BLUE}0.${NC} ${YELLOW}退出${NC}"
     echo -e "------------------------------------"
@@ -647,8 +606,7 @@ main_menu() {
 
     case "$choice" in
         1)
-            # 默认主实例配置文件路径
-            configure_ss_node "${SS_CONFIG_DIR}/config.json"
+            configure_ss_node_single "false" # Reconfigure default node
             ;;
         2)
             add_new_ss_node
