@@ -35,7 +35,7 @@ install_jq() {
         echo -e "${GREEN}'jq' 安装完成。${NC}"
     else
         echo -e "${GREEN}'jq' 已安装。${NC}"
-    fi
+    L
     return 0
 }
 
@@ -88,35 +88,9 @@ generate_ss_link() {
     echo "ss://${credentials_base64}@${server_ip}:${server_port}#Shadowsocks_Node"
 }
 
-# 切换到单端口模式
-convert_to_single_port() {
-    local current_config_json=$(cat "$MAIN_CONFIG_FILE")
-    local port_count=$(echo "$current_config_json" | jq '.port_password | keys | length')
-
-    if [ "$port_count" -ne 1 ]; then
-        # This function should only be called if there's exactly one port
-        return 0
-    fi
-
-    echo -e "${YELLOW}检测到只剩一个端口，正在将配置转换为单端口模式...${NC}"
-    local single_port=$(echo "$current_config_json" | jq -r '.port_password | keys[]')
-    local single_password=$(echo "$current_config_json" | jq -r ".port_password[\"$single_port\"]")
-
-    local UPDATED_CONFIG=$(echo "$current_config_json" | jq \
-        --argjson port_num "$single_port" \
-        --arg password "$single_password" \
-        'del(.port_password) | .server_port = ($port_num | tonumber) | .password = $password' \
-    )
-    
-    echo "$UPDATED_CONFIG" > "$MAIN_CONFIG_FILE"
-    echo -e "${GREEN}配置已成功转换为单端口模式。${NC}"
-}
-
-# 配置 Shadowsocks 节点 (现在是添加/修改服务器配置到主 config.json)
+# 配置 Shadowsocks 节点 (现在固定为单端口配置)
 configure_ss_node_single() {
-    local is_new_node=$1 # "true" for new node, "false" for reconfiguring default
-
-    echo -e "\n--- ${BLUE}配置 Shadowsocks 节点${NC} ---"
+    echo -e "\n--- ${BLUE}配置 Shadowsocks 节点 (单端口模式)${NC} ---"
 
     # 在尝试创建配置文件之前，先确保目录存在
     mkdir -p "$SS_CONFIG_DIR"
@@ -162,15 +136,15 @@ configure_ss_node_single() {
     esac
 
     local SS_SERVER_PORT # Declare the variable
-    if [ "$is_new_node" = "true" ]; then
-        read -p "请输入新 Shadowsocks 代理端口: " SS_SERVER_PORT_INPUT
-        while ! [[ "$SS_SERVER_PORT_INPUT" =~ ^[0-9]+$ ]] || [ "$SS_SERVER_PORT_INPUT" -lt 1 ] || [ "$SS_SERVER_PORT_INPUT" -gt 65535 ]; do
-            echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
-            read -p "请重新输入新 Shadowsocks 代理端口: " SS_SERVER_PORT_INPUT
-        done
-        SS_SERVER_PORT="$SS_SERVER_PORT_INPUT"
+    read -p "请输入 Shadowsocks 代理端口 (默认: ${DEFAULT_SS_SERVER_PORT}): " SS_SERVER_PORT_INPUT
+    if [ -z "$SS_SERVER_PORT_INPUT" ]; then
+        SS_SERVER_PORT="$DEFAULT_SS_SERVER_PORT"
+        echo -e "${GREEN}使用默认代理端口: ${SS_SERVER_PORT}${NC}"
     else
-        # For default node, allow accepting default port
+        SS_SERVER_PORT="$SS_SERVER_PORT_INPUT"
+    fi
+    while ! [[ "$SS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$SS_SERVER_PORT" -lt 1 ] || [ "$SS_SERVER_PORT" -gt 65535 ]; do
+        echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
         read -p "请输入 Shadowsocks 代理端口 (默认: ${DEFAULT_SS_SERVER_PORT}): " SS_SERVER_PORT_INPUT
         if [ -z "$SS_SERVER_PORT_INPUT" ]; then
             SS_SERVER_PORT="$DEFAULT_SS_SERVER_PORT"
@@ -178,26 +152,7 @@ configure_ss_node_single() {
         else
             SS_SERVER_PORT="$SS_SERVER_PORT_INPUT"
         fi
-        while ! [[ "$SS_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$SS_SERVER_PORT" -lt 1 ] || [ "$SS_SERVER_PORT" -gt 65535 ]; do
-            echo -e "${RED}端口号无效，请输入一个1到65535之间的数字。${NC}"
-            read -p "请输入 Shadowsocks 代理端口 (默认: ${DEFAULT_SS_SERVER_PORT}): " SS_SERVER_PORT_INPUT
-            if [ -z "$SS_SERVER_PORT_INPUT" ]; then
-                SS_SERVER_PORT="$DEFAULT_SS_SERVER_PORT"
-                echo -e "${GREEN}使用默认代理端口: ${SS_SERVER_PORT}${NC}"
-            else
-                SS_SERVER_PORT="$SS_SERVER_PORT_INPUT"
-            fi
-        done
-    fi
-
-    # Check if this port already exists in config.json using port_password or server_port
-    if [ -f "$MAIN_CONFIG_FILE" ]; then
-        if jq -e ".port_password | has(\"$SS_SERVER_PORT\")" "$MAIN_CONFIG_FILE" >/dev/null 2>&1 || \
-           jq -e ".server_port == $SS_SERVER_PORT" "$MAIN_CONFIG_FILE" >/dev/null 2>&1; then
-            echo -e "${RED}错误：端口 ${SS_SERVER_PORT} 已在 ${MAIN_CONFIG_FILE} 中配置。请选择其他端口或修改现有配置。${NC}"
-            return 1
-        fi
-    fi
+    done
 
     # 询问密码 (显示输入)
     read -p "请输入 Shadowsocks 连接密码 (默认: ${DEFAULT_SS_PASSWORD}): " SS_PASSWORD_INPUT
@@ -263,68 +218,22 @@ configure_ss_node_single() {
 
     echo -e "\n${YELLOW}正在更新 Shadowsocks-libev 配置文件: ${MAIN_CONFIG_FILE}...${NC}"
 
-    local current_config_json="{}"
-    if [ -f "$MAIN_CONFIG_FILE" ]; then
-        current_config_json=$(cat "$MAIN_CONFIG_FILE")
-    fi
-
-    # Determine if current config is multi-port (has port_password) or single-port (has server_port)
-    local has_port_password="false"
-    if echo "$current_config_json" | jq -e '.port_password' >/dev/null 2>&1; then
-        has_port_password="true"
-    fi
-
-    local UPDATED_CONFIG=""
-    if [ "$has_port_password" = "true" ]; then
-        # Already multi-port, just add/update the specific port in port_password
-        UPDATED_CONFIG=$(echo "$current_config_json" | jq \
-            --argjson server_addr_json "$SS_SERVER_ADDR_CONFIG" \
-            --arg method "$SS_METHOD" \
-            --arg timeout_str "$SS_TIMEOUT" \
-            --argjson port_num "$SS_SERVER_PORT" \
-            --arg password "$SS_PASSWORD" \
-            '.server = $server_addr_json | .method = $method | .timeout = ($timeout_str | tonumber) | .fast_open = true | .port_password[$port_num | tostring] = $password' \
-        )
-    else
-        # Single-port config or no config exists, convert to multi-port
-        # First, extract existing single port if any
-        local old_server_port=""
-        local old_password=""
-        if echo "$current_config_json" | jq -e '.server_port' >/dev/null 2>&1; then
-            old_server_port=$(echo "$current_config_json" | jq -r '.server_port')
-            old_password=$(echo "$current_config_json" | jq -r '.password')
-        fi
-
-        # Start with a base multi-port structure
-        UPDATED_CONFIG=$(jq -n \
-            --argjson server_addr_json "$SS_SERVER_ADDR_CONFIG" \
-            --arg method "$SS_METHOD" \
-            --arg timeout_str "$SS_TIMEOUT" \
-            '{
-                "server": $server_addr_json,
-                "method": $method,
-                "timeout": ($timeout_str | tonumber),
-                "fast_open": true,
-                "port_password": {}
-            }' \
-        )
-
-        # Add the existing single port if it existed
-        if [ -n "$old_server_port" ]; then
-            UPDATED_CONFIG=$(echo "$UPDATED_CONFIG" | jq \
-                --argjson port_num "$old_server_port" \
-                --arg password "$old_password" \
-                '.port_password[$port_num | tostring] = $password' \
-            )
-        fi
-
-        # Add the new/current port
-        UPDATED_CONFIG=$(echo "$UPDATED_CONFIG" | jq \
-            --argjson port_num "$SS_SERVER_PORT" \
-            --arg password "$SS_PASSWORD" \
-            '.port_password[$port_num | tostring] = $password' \
-        )
-    fi
+    # 总是生成单端口配置文件
+    local UPDATED_CONFIG=$(jq -n \
+        --argjson server_addr_json "$SS_SERVER_ADDR_CONFIG" \
+        --argjson server_port_num "$SS_SERVER_PORT" \
+        --arg password "$SS_PASSWORD" \
+        --arg method "$SS_METHOD" \
+        --arg timeout_str "$SS_TIMEOUT" \
+        '{
+            "server": $server_addr_json,
+            "server_port": ($server_port_num | tonumber),
+            "password": $password,
+            "method": $method,
+            "timeout": ($timeout_str | tonumber),
+            "fast_open": true
+        }' \
+    )
 
     if [ $? -ne 0 ]; then
         echo -e "${RED}错误：无法更新/生成配置文件，请检查 jq 命令或 JSON 语法。${NC}"
@@ -343,8 +252,8 @@ configure_ss_node_single() {
     # --- 添加对 /etc/default/shadowsocks-libev 的更新 ---
     echo -e "${YELLOW}正在更新 Systemd 环境变量文件: /etc/default/shadowsocks-libev...${NC}"
     echo "CONFFILE=${MAIN_CONFIG_FILE}" > "/etc/default/shadowsocks-libev"
-    # FIX: Explicitly add --fast-open to DAEMON_ARGS
-    echo "DAEMON_ARGS=\"--fast-open\"" >> "/etc/default/shadowsocks-libev"
+    # 将 DAEMON_ARGS 设置为空，因为所有配置都在 config.json 中
+    echo "DAEMON_ARGS=\"\"" >> "/etc/default/shadowsocks-libev"
     echo -e "${GREEN}Systemd 环境变量文件已更新。${NC}"
     # --- 更新结束 ---
 
@@ -408,79 +317,10 @@ configure_ss_node_single() {
     echo -e "您可以运行 'systemctl status ${DEFAULT_SS_SERVICE_NAME}' 来检查服务状态。"
 }
 
-# 删除 Shadowsocks 端口代理
-delete_ss_port() {
-    echo -e "\n--- ${BLUE}删除 Shadowsocks 端口代理${NC} ---"
-    install_jq # 确保 jq 已安装
-    if [ $? -ne 0 ]; then return; fi
-
-    if [ ! -f "$MAIN_CONFIG_FILE" ]; then
-        echo -e "${RED}错误：主配置文件 ${MAIN_CONFIG_FILE} 不存在。请先配置节点。${NC}"
-        return 1
-    fi
-
-    local current_config=$(cat "$MAIN_CONFIG_FILE")
-    local port_passwords_obj=$(echo "$current_config" | jq '.port_password // {}')
-    local ports=$(echo "$port_passwords_obj" | jq -r 'keys[]')
-    local port_count=$(echo "$ports" | wc -w)
-
-    if [ "$port_count" -eq 0 ]; then
-        echo -e "${YELLOW}当前配置文件中没有配置任何端口代理。${NC}"
-        return 0
-    fi
-
-    echo -e "${BLUE}当前已配置的端口：${NC}"
-    echo "$ports" | nl -ba -w2
-
-    read -p "请输入要删除的端口号: " PORT_TO_DELETE
-
-    if ! [[ "$PORT_TO_DELETE" =~ ^[0-9]+$ ]] || [ "$PORT_TO_DELETE" -lt 1 ] || [ "$PORT_TO_DELETE" -gt 65535 ]; then
-        echo -e "${RED}端口号无效。${NC}"
-        return 1
-    fi
-
-    if ! echo "$ports" | grep -qw "$PORT_TO_DELETE"; then
-        echo -e "${RED}端口 ${PORT_TO_DELETE} 未在配置文件中找到。${NC}"
-        return 1
-    fi
-
-    local UPDATED_CONFIG=$(echo "$current_config" | jq "del(.port_password[\"$PORT_TO_DELETE\"])")
-
-    echo "$UPDATED_CONFIG" > "$MAIN_CONFIG_FILE"
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}错误：无法更新配置文件，请检查权限。${NC}"
-        return 1
-    fi
-
-    echo -e "${GREEN}端口 ${PORT_TO_DELETE} 已成功从配置文件中删除。${NC}"
-
-    # 检查删除后剩余的端口数量
-    local remaining_ports_count=$(echo "$UPDATED_CONFIG" | jq '.port_password | keys | length // 0')
-
-    if [ "$remaining_ports_count" -eq 1 ]; then
-        convert_to_single_port
-    elif [ "$remaining_ports_count" -eq 0 ]; then
-        echo -e "${YELLOW}所有端口已删除。服务将不会监听任何端口。${NC}"
-        # 此时可以考虑清空 port_password 对象，而不是删除整个文件
-        local FINAL_CONFIG=$(echo "$UPDATED_CONFIG" | jq 'del(.port_password) | .server_port = 0 | .password = ""') # 可以将端口和密码设为默认或空
-        echo "$FINAL_CONFIG" > "$MAIN_CONFIG_FILE"
-        echo -e "${YELLOW}配置文件已更新，不再包含任何代理端口。您可能需要重新添加端口或卸载服务。${NC}"
-    fi
-
-    echo -e "\n${YELLOW}正在重启 Shadowsocks-libev 服务以应用更改...${NC}"
-    systemctl restart "${DEFAULT_SS_SERVICE_NAME}"
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}Shadowsocks-libev 服务已成功重启。${NC}"
-    else
-        echo -e "${RED}重启 Shadowsocks-libev 服务失败，请检查日志。${NC}"
-    fi
-}
-
-
 # 卸载 Shadowsocks-libev
 uninstall_ss() {
     echo -e "\n--- ${RED}卸载 Shadowsocks-libev${NC} ---"
-    read -p "您确定要卸载 Shadowsocks-libev 及所有节点吗？(y/N): " confirm
+    read -p "您确定要卸载 Shadowsocks-libev 吗？(y/N): " confirm
     if [[ "$confirm" =~ ^[yY]$ ]]; then
         echo -e "${YELLOW}正在停止并禁用 Shadowsocks-libev 主服务...${NC}"
         
@@ -523,7 +363,7 @@ uninstall_ss() {
         systemctl daemon-reload
         systemctl reset-failed
         
-        echo -e "${GREEN}Shadowsocks-libev 及所有节点已成功卸载。${NC}"
+        echo -e "${GREEN}Shadowsocks-libev 已成功卸载。${NC}"
         exit 0
     else
         echo -e "${BLUE}卸载操作已取消。${NC}"
@@ -551,34 +391,22 @@ check_status() {
         echo -e "${YELLOW}请尝试手动运行 'ps aux | grep ss-server' 检查。${NC}"
     fi
 
-    echo -e "\n${BLUE}正在检查配置中所有端口的使用情况...${NC}"
+    echo -e "\n${BLUE}正在检查配置中端口的使用情况...${NC}"
     if ! command -v jq &> /dev/null; then
         echo -e "${RED}'jq' 命令未安装，无法解析配置文件以获取端口列表。请先安装 jq。${NC}"
         return
     fi
     if [ -f "$MAIN_CONFIG_FILE" ]; then
-        # Check for single server_port
-        local single_port=$(jq -r '.server_port // empty' "$MAIN_CONFIG_FILE" 2>/dev/null)
-        if [ -n "$single_port" ]; then
-            echo -e "${BLUE}端口 ${single_port}：${NC}"
+        local configured_port=$(jq -r '.server_port // empty' "$MAIN_CONFIG_FILE" 2>/dev/null)
+        if [ -n "$configured_port" ]; then
+            echo -e "${BLUE}配置端口: ${configured_port}${NC}"
             if command -v lsof &> /dev/null; then
-                lsof -i:"$single_port" || echo -e "${GREEN}端口 ${single_port} 未被占用。${NC}"
+                lsof -i:"$configured_port" || echo -e "${GREEN}端口 ${configured_port} 未被占用。${NC}"
             else
-                echo -e "${YELLOW}lsof 未安装，请手动检查端口 ${single_port} (netstat -tulnp | grep ${single_port} 或 ss -tulnp | grep ${single_port}).${NC}"
+                echo -e "${YELLOW}lsof 未安装，请手动检查端口 ${configured_port} (netstat -tulnp | grep ${configured_port} 或 ss -tulnp | grep ${configured_port}).${NC}"
             fi
-        fi
-
-        # Check for port_password if present
-        local multi_ports=$(jq -r '.port_password | keys[]' "$MAIN_CONFIG_FILE" 2>/dev/null)
-        if [ -n "$multi_ports" ]; then
-            for port in $multi_ports; do
-                echo -e "${BLUE}端口 ${port}：${NC}"
-                if command -v lsof &> /dev/null; then
-                    lsof -i:"$port" || echo -e "${GREEN}端口 ${port} 未被占用。${NC}"
-                else
-                    echo -e "${YELLOW}lsof 未安装，请手动检查端口 ${port} (netstat -tulnp | grep ${port} 或 ss -tulnp | grep ${port}).${NC}"
-                fi
-            done
+        else
+            echo -e "${YELLOW}配置文件中未检测到 'server_port' 配置。${NC}"
         fi
     else
         echo -e "${YELLOW}主配置文件 ${MAIN_CONFIG_FILE} 不存在。${NC}"
@@ -616,7 +444,7 @@ view_current_config() {
     fi
 
     if [ ! -f "$MAIN_CONFIG_FILE" ]; then
-        echo -e "${RED}未检测到 Shadowsocks-libev 主配置文件: ${MAIN_CONFIG_FILE}。请先运行 '安装/重新配置默认节点' 进行配置。${NC}"
+        echo -e "${RED}未检测到 Shadowsocks-libev 主配置文件: ${MAIN_CONFIG_FILE}。请先运行 '安装/重新配置 Shadowsocks 节点' 进行配置。${NC}"
         return
     fi
 
@@ -634,127 +462,80 @@ view_current_config() {
         server_addr_display=$(echo "$server_addr_raw" | jq -r '.' 2>/dev/null)
     fi
 
+    local single_server_port=$(jq -r '.server_port // empty' "$MAIN_CONFIG_FILE" 2>/dev/null)
+    local single_password=$(jq -r '.password // empty' "$MAIN_CONFIG_FILE" 2>/dev/null)
     local global_method=$(jq -r '.method' "$MAIN_CONFIG_FILE" 2>/dev/null)
     local global_timeout=$(jq -r '.timeout' "$MAIN_CONFIG_FILE" 2>/dev/null)
 
-    echo -e "  ${BLUE}全局监听地址: ${GREEN}$server_addr_display${NC}"
-    echo -e "  ${BLUE}全局加密方式: ${GREEN}$global_method${NC}"
-    echo -e "  ${BLUE}全局超时时间: ${GREEN}$global_timeout${NC} 秒"
-    echo -e "  ${BLUE}连接密码: ${GREEN}(各端口独立配置或全局配置)${NC}"
+    if [ -z "$single_server_port" ]; then
+        echo -e "${RED}配置文件中未检测到有效的单端口配置。${NC}"
+        return
+    fi
+
+    echo -e "  ${BLUE}监听地址: ${GREEN}$server_addr_display${NC}"
+    echo -e "  ${BLUE}代理端口: ${GREEN}$single_server_port${NC}"
+    echo -e "  ${BLUE}加密方式: ${GREEN}$global_method${NC}"
+    echo -e "  ${BLUE}连接密码: ${GREEN}(已设置，此处不显示)${NC}" # Don't display password directly
+    echo -e "  ${BLUE}超时时间: ${GREEN}$global_timeout${NC} 秒"
 
     local public_ipv4=$(get_public_ipv4)
     local public_ipv6=$(get_public_ipv6)
 
-    # Display single server_port if it exists (older config style)
-    local single_server_port=$(jq -r '.server_port // empty' "$MAIN_CONFIG_FILE" 2>/dev/null)
-    local single_password=$(jq -r '.password // empty' "$MAIN_CONFIG_FILE" 2>/dev/null)
-
-    if [ -n "$single_server_port" ]; then
-        echo -e "\n${BLUE}--- 单端口配置 (Port: $single_server_port) ---${NC}"
-        echo -e "  ${BLUE}代理端口: ${GREEN}$single_server_port${NC}"
-        echo -e "  ${BLUE}连接密码: ${GREEN}(已设置，此处不显示)${NC}" # Don't display password directly
-
-        echo -e "\n${GREEN}请复制以下 SS 链接到您的代理软件：${NC}"
-        if [ -n "$public_ipv4" ]; then
-            echo -e "${BLUE}IPv4 SS 链接:${NC}"
-            NODE_LINK_IPV4=$(generate_ss_link "$public_ipv4" "$single_server_port" "$global_method" "$single_password")
-            echo -e "${YELLOW}${NODE_LINK_IPV4}${NC}"
-        fi
-        if [ "$IS_IPV6_ENABLED_IN_CONFIG" = "true" ] && [ -n "$public_ipv6" ]; then
-            echo -e "${BLUE}IPv6 SS 链接:${NC}"
-            NODE_LINK_IPV6=$(generate_ss_link "[$public_ipv6]" "$single_server_port" "$global_method" "$single_password") # IPv6 地址需要用方括号括起来
-            echo -e "${YELLOW}${NODE_LINK_IPV6}${NC}"
-        fi
+    echo -e "\n${GREEN}请复制以下 SS 链接到您的代理软件：${NC}"
+    
+    if [ -n "$public_ipv4" ]; then
+        echo -e "${BLUE}IPv4 SS 链接:${NC}"
+        NODE_LINK_IPV4=$(generate_ss_link "$public_ipv4" "$single_server_port" "$global_method" "$single_password")
+        echo -e "${YELLOW}${NODE_LINK_IPV4}${NC}"
+    else
+        echo -e "${RED}警告：未能获取到公网 IPv4 地址，无法生成 IPv4 SS 链接。${NC}"
     fi
 
-    # Display multiple port_password configurations
-    local port_passwords=$(jq -r '.port_password | to_entries[] | "\(.key) \(.value)"' "$MAIN_CONFIG_FILE" 2>/dev/null)
-
-    if [ -n "$port_passwords" ]; then
-        echo -e "\n${BLUE}--- 多端口配置 ---${NC}"
-        echo "$port_passwords" | while read -r port password; do
-            echo -e "\n${BLUE}端口: ${GREEN}$port${NC}"
-            echo -e "  ${BLUE}连接密码: ${GREEN}(已设置，此处不显示)${NC}" # Don't display password directly
-            echo -e "  ${BLUE}加密方式: ${GREEN}$global_method${NC}" # Assume global method for now
-            
-            echo -e "${GREEN}请复制以下 SS 链接到您的代理软件：${NC}"
-            if [ -n "$public_ipv4" ]; then
-                echo -e "${BLUE}IPv4 SS 链接:${NC}"
-                NODE_LINK_IPV4=$(generate_ss_link "$public_ipv4" "$port" "$global_method" "$password")
-                echo -e "${YELLOW}${NODE_LINK_IPV4}${NC}"
-            else
-                echo -e "${RED}警告：未能获取到公网 IPv4 地址，无法生成 IPv4 SS 链接。${NC}"
-            fi
-
-            if [ "$IS_IPV6_ENABLED_IN_CONFIG" = "true" ] && [ -n "$public_ipv6" ]; then
-                echo -e "${BLUE}IPv6 SS 链接:${NC}"
-                NODE_LINK_IPV6=$(generate_ss_link "[$public_ipv6]" "$port" "$global_method" "$password")
-                echo -e "${YELLOW}${NODE_LINK_IPV6}${NC}"
-            else
-                echo -e "${YELLOW}提示：服务器未检测到公网 IPv6 地址，无法生成 IPv6 SS 链接。${NC}"
-            fi
-        done
+    if [ "$IS_IPV6_ENABLED_IN_CONFIG" = "true" ] && [ -n "$public_ipv6" ]; then
+        echo -e "${BLUE}IPv6 SS 链接:${NC}"
+        NODE_LINK_IPV6=$(generate_ss_link "[$public_ipv6]" "$single_server_port" "$global_method" "$single_password") # IPv6 地址需要用方括号括起来
+        echo -e "${YELLOW}${NODE_LINK_IPV6}${NC}"
     else
-        if [ -z "$single_server_port" ]; then
-            echo -e "${YELLOW}主配置文件中未检测到有效的代理端口配置 (单端口或多端口)。${NC}"
-        fi
+        echo -e "${YELLOW}提示：服务器未检测到公网 IPv6 地址，无法生成 IPv6 SS 链接。${NC}"
     fi
 
     echo -e "${BLUE}(提示：SS 链接中的 IP 地址已自动尝试获取您的公网 IP)${NC}"
     echo -e "------------------------------------"
 }
 
-# 新增 SS 节点 (现在是向 config.json 添加一个新端口配置)
-add_new_ss_node() {
-    echo -e "\n--- ${BLUE}新增 Shadowsocks 节点${NC} ---"
-    install_jq # 确保 jq 已安装
-    if [ $? -ne 0 ]; then return; fi
-
-    configure_ss_node_single "true"
-}
-
-
 # --- 主菜单 ---
 
 main_menu() {
     clear
-    echo -e "--- ${GREEN}Shadowsocks-libev 管理脚本${NC} ---"
-    echo -e "${BLUE}1.${NC} ${YELLOW}安装/重新配置默认节点 (或修改现有全局配置)${NC}"
-    echo -e "${BLUE}2.${NC} ${YELLOW}新增 Shadowsocks 端口代理${NC}" # Clarified this adds a port
-    echo -e "${BLUE}3.${NC} ${YELLOW}删除 Shadowsocks 端口代理${NC}" # New option
-    echo -e "${BLUE}4.${NC} ${RED}卸载 Shadowsocks-libev 及所有节点${NC}"
-    echo -e "${BLUE}5.${NC} ${GREEN}查看 Shadowsocks 服务运行状态${NC}" # Removed "所有" as there's one main service
-    echo -e "${BLUE}6.${NC} ${YELLOW}停止 Shadowsocks 服务${NC}"
-    echo -e "${BLUE}7.${NC} ${YELLOW}重启 Shadowsocks 服务${NC}"
-    echo -e "${BLUE}8.${NC} ${GREEN}查看所有 Shadowsocks 节点当前配置及 SS 链接${NC}"
+    echo -e "--- ${GREEN}Shadowsocks-libev 管理脚本 (单端口模式)${NC} ---"
+    echo -e "${BLUE}1.${NC} ${YELLOW}安装/重新配置 Shadowsocks 节点${NC}"
+    echo -e "${BLUE}2.${NC} ${RED}卸载 Shadowsocks-libev${NC}"
+    echo -e "${BLUE}3.${NC} ${GREEN}查看 Shadowsocks 服务运行状态${NC}"
+    echo -e "${BLUE}4.${NC} ${YELLOW}停止 Shadowsocks 服务${NC}"
+    echo -e "${BLUE}5.${NC} ${YELLOW}重启 Shadowsocks 服务${NC}"
+    echo -e "${BLUE}6.${NC} ${GREEN}查看当前 Shadowsocks 节点配置及 SS 链接${NC}"
     echo -e "${BLUE}0.${NC} ${YELLOW}退出${NC}"
     echo -e "------------------------------------"
-    read -p "请选择一个操作 (0-8): " choice
+    read -p "请选择一个操作 (0-6): " choice
     echo ""
 
     case "$choice" in
         1)
-            configure_ss_node_single "false" # Reconfigure default node
+            configure_ss_node_single
             ;;
         2)
-            add_new_ss_node
-            ;;
-        3)
-            delete_ss_port # New function call
-            ;;
-        4)
             uninstall_ss
             ;; # 卸载函数内部已包含退出逻辑
-        5)
+        3)
             check_status
             ;;
-        6)
+        4)
             stop_service
             ;;
-        7)
+        5)
             restart_service
             ;;
-        8)
+        6)
             view_current_config
             ;;
         0)
