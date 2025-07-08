@@ -202,7 +202,7 @@ configure_ss_node() {
             echo -e "${RED}输入无效，使用默认加密方法: ${DEFAULT_SS_METHOD}${NC}"
             SS_METHOD="$DEFAULT_SS_METHOD"
         fi
-    done
+        done
 
     # 输入超时时间
     read -p "请输入 Shadowsocks 超时时间 (秒, 默认: ${DEFAULT_SS_TIMEOUT}): " SS_TIMEOUT_INPUT
