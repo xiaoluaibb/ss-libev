@@ -166,9 +166,10 @@ configure_ss_node_single() {
         done
     fi
 
-    # Check if this port already exists in config.json
+    # Check if this port already exists in config.json using port_password or server_port
     if [ -f "$MAIN_CONFIG_FILE" ]; then
-        if jq -e ".port_password | to_entries[] | select(.key==\"$SS_SERVER_PORT\")" "$MAIN_CONFIG_FILE" >/dev/null 2>&1; then
+        if jq -e ".port_password | has(\"$SS_SERVER_PORT\")" "$MAIN_CONFIG_FILE" >/dev/null 2>&1 || \
+           jq -e ".server_port == $SS_SERVER_PORT" "$MAIN_CONFIG_FILE" >/dev/null 2>&1; then
             echo -e "${RED}错误：端口 ${SS_SERVER_PORT} 已在 ${MAIN_CONFIG_FILE} 中配置。请选择其他端口或修改现有配置。${NC}"
             return 1
         fi
@@ -238,58 +239,78 @@ configure_ss_node_single() {
 
     echo -e "\n${YELLOW}正在更新 Shadowsocks-libev 配置文件: ${MAIN_CONFIG_FILE}...${NC}"
 
-    local new_server_config=""
-    # If the server address is an array, ensure it's formatted correctly
-    if [[ "$SS_SERVER_ADDR_CONFIG" == \[*\] ]]; then
-        new_server_config="\"server\":$SS_SERVER_ADDR_CONFIG,"
-    else
-        new_server_config="\"server\":$SS_SERVER_ADDR_CONFIG,"
-    fi
-
     local current_config_json="{}"
     if [ -f "$MAIN_CONFIG_FILE" ]; then
         current_config_json=$(cat "$MAIN_CONFIG_FILE")
     fi
 
-    # Check if 'port_password' exists or if it's the first config
+    # Determine if current config is multi-port (has port_password) or single-port (has server_port)
+    local has_port_password="false"
     if echo "$current_config_json" | jq -e '.port_password' >/dev/null 2>&1; then
-        # Add new port to existing port_password object
+        has_port_password="true"
+    fi
+
+    local UPDATED_CONFIG=""
+    if [ "$has_port_password" = "true" ]; then
+        # Already multi-port, just add/update the specific port in port_password
         UPDATED_CONFIG=$(echo "$current_config_json" | jq \
-            --argjson port "$SS_SERVER_PORT" \
+            --argjson server_addr_json "$SS_SERVER_ADDR_CONFIG" \
             --arg method "$SS_METHOD" \
+            --arg timeout_str "$SS_TIMEOUT" \
+            --argjson port_num "$SS_SERVER_PORT" \
             --arg password "$SS_PASSWORD" \
-            --arg timeout "$SS_TIMEOUT" \
-            '.port_password[$port | tostring] = $password | .method = $method | .timeout = $timeout | .fast_open = true | .'server=$SS_SERVER_ADDR_CONFIG) # Update method and timeout at top level, and server
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}错误：无法更新配置文件，可能是 JSON 格式错误。${NC}"
-            return 1
-        fi
+            '.server = $server_addr_json | .method = $method | .timeout = ($timeout_str | tonumber) | .fast_open = true | .port_password[$port_num | tostring] = $password' \
+        )
     else
-        # Create a new config with server, port_password, method, timeout, fast_open
-        UPDATED_CONFIG=$(jq -n \
-            --argjson server_addr "$SS_SERVER_ADDR_CONFIG" \
-            --argjson port "$SS_SERVER_PORT" \
-            --arg method "$SS_METHOD" \
-            --arg password "$SS_PASSWORD" \
-            --arg timeout "$SS_TIMEOUT" \
-            '{
-                "server": $server_addr,
-                "server_port": $port,
-                "password": $password,
-                "method": $method,
-                "timeout": $timeout,
-                "fast_open": true
-            }')
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}错误：无法生成初始配置文件。${NC}"
-            return 1
+        # Single-port config or no config exists, convert to multi-port
+        # First, extract existing single port if any
+        local old_server_port=""
+        local old_password=""
+        if echo "$current_config_json" | jq -e '.server_port' >/dev/null 2>&1; then
+            old_server_port=$(echo "$current_config_json" | jq -r '.server_port')
+            old_password=$(echo "$current_config_json" | jq -r '.password')
         fi
+
+        # Start with a base multi-port structure
+        UPDATED_CONFIG=$(jq -n \
+            --argjson server_addr_json "$SS_SERVER_ADDR_CONFIG" \
+            --arg method "$SS_METHOD" \
+            --arg timeout_str "$SS_TIMEOUT" \
+            '{
+                "server": $server_addr_json,
+                "method": $method,
+                "timeout": ($timeout_str | tonumber),
+                "fast_open": true,
+                "port_password": {}
+            }' \
+        )
+
+        # Add the existing single port if it existed
+        if [ -n "$old_server_port" ]; then
+            UPDATED_CONFIG=$(echo "$UPDATED_CONFIG" | jq \
+                --argjson port_num "$old_server_port" \
+                --arg password "$old_password" \
+                '.port_password[$port_num | tostring] = $password' \
+            )
+        fi
+
+        # Add the new/current port
+        UPDATED_CONFIG=$(echo "$UPDATED_CONFIG" | jq \
+            --argjson port_num "$SS_SERVER_PORT" \
+            --arg password "$SS_PASSWORD" \
+            '.port_password[$port_num | tostring] = $password' \
+        )
+    fi
+
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}错误：无法更新/生成配置文件，请检查 jq 命令或 JSON 语法。${NC}"
+        return 1
     fi
 
     echo "$UPDATED_CONFIG" > "$MAIN_CONFIG_FILE"
 
     if [ $? -ne 0 ]; then
-      echo -e "${RED}配置文件生成失败，请检查权限或路径。${NC}"
+      echo -e "${RED}配置文件写入失败，请检查权限或路径。${NC}"
       return 1
     fi
 
@@ -535,7 +556,7 @@ view_current_config() {
         fi
         if [ "$IS_IPV6_ENABLED_IN_CONFIG" = "true" ] && [ -n "$public_ipv6" ]; then
             echo -e "${BLUE}IPv6 SS 链接:${NC}"
-            NODE_LINK_IPV6=$(generate_ss_link "[$public_ipv6]" "$single_server_port" "$global_method" "$single_password")
+            NODE_LINK_IPV6=$(generate_ss_link "[$public_ipv6]" "$single_server_port" "$global_method" "$single_password") # IPv6 地址需要用方括号括起来
             echo -e "${YELLOW}${NODE_LINK_IPV6}${NC}"
         fi
     fi
