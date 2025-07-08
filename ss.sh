@@ -188,7 +188,6 @@ configure_ss_node() {
             "${CRYPTO_METHODS[$i]}" == "xchacha20-ietf-poly1305" || "${CRYPTO_METHODS[$i]}" == \
             "2022-blake3-aes-256-gcm" ]] && echo "(推荐)" || echo "" ) ${NC}
     done
-    local SS_METHOD_CHOICE
     read -p "请选择加密方法 (1-${#CRYPTO_METHODS[@]}, 默认 $((default_method_index+1))): " SS_METHOD_CHOICE_INPUT
     if [ -z "$SS_METHOD_CHOICE_INPUT" ]; then
         SS_METHOD="${CRYPTO_METHODS[$default_method_index]}"
@@ -202,7 +201,7 @@ configure_ss_node() {
             echo -e "${RED}输入无效，使用默认加密方法: ${DEFAULT_SS_METHOD}${NC}"
             SS_METHOD="$DEFAULT_SS_METHOD"
         fi
-    done
+    fi # <-- 修正：此处缺少了关闭最外层if的fi
 
     # 输入超时时间
     read -p "请输入 Shadowsocks 超时时间 (秒, 默认: ${DEFAULT_SS_TIMEOUT}): " SS_TIMEOUT_INPUT
@@ -225,7 +224,7 @@ configure_ss_node() {
 
     echo -e "\n${YELLOW}正在生成 Shadowsocks-libev 配置文件: ${config_file_path}...${NC}"
     # 写入配置文件 - fast_open 设为 false，mode 设为 tcp_and_udp
-    cat <<EOF > "$config_file_path"
+    cat <<EOF_CONFIG > "$config_file_path" # 更改了EOF标记，避免与外部EOF冲突
 {
   "server":$SS_SERVER_ADDR_CONFIG,
   "server_port":$SS_SERVER_PORT,
@@ -235,7 +234,7 @@ configure_ss_node() {
   "fast_open":false,
   "mode":"tcp_and_udp"
 }
-EOF
+EOF_CONFIG
     if [ $? -ne 0 ]; then
         echo -e "${RED}配置文件生成失败。请检查目录权限或磁盘空间。${NC}"
         return 1
@@ -281,8 +280,8 @@ EOF
         local public_ipv4=$(get_public_ipv4)
         if [ -n "$public_ipv4" ]; then
             echo -e "${BLUE}IPv4 SS 链接:${NC}"
-            NODE_LINK_IPV4=$(generate_ss_link "$public_ipv4" "$SS_SERVER_PORT" "$SS_METHOD" "$SS_PASSWORD")
-            echo -e "${YELLOW}${NODE_LINK_IPV4}${NC}"
+            local node_link_ipv4=$(generate_ss_link "$public_ipv4" "$SS_SERVER_PORT" "$SS_METHOD" "$SS_PASSWORD") # 修正变量名
+            echo -e "${YELLOW}${node_link_ipv4}${NC}" # 修正变量名
         else
             echo -e "${RED}警告：无法获取公共 IPv4 地址，无法生成 IPv4 SS 链接。${NC}"
         fi
@@ -292,7 +291,8 @@ EOF
             local public_ipv6=$(get_public_ipv6)
             if [ -n "$public_ipv6" ]; then
                 local node_link_ipv6=$(generate_ss_link "[$public_ipv6]" "$SS_SERVER_PORT" "$SS_METHOD" "$SS_PASSWORD") # IPv6 地址需要用方括号括起来
-                echo -e "${YELLOW}${NODE_LINK_IPV6}${NC}"
+                echo -e "${BLUE}IPv6 SS 链接:${NC}" # 添加了提示
+                echo -e "${YELLOW}${node_link_ipv6}${NC}" # 修正变量名
             else
                 echo -e "${YELLOW}提示：虽然检测到IPv6支持，但无法获取公共 IPv6 地址，无法生成 IPv6 SS 链接。${NC}"
             fi
@@ -306,6 +306,7 @@ EOF
     echo -e "\n--- ${GREEN}配置完成${NC} ---"
     echo -e "您可以使用 'systemctl status ${service_instance}' 查看服务状态。"
 }
+
 
 # 新增 Shadowsocks 节点（端口、密码、加密方式可自定义）
 add_new_ss_node() {
